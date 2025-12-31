@@ -1,0 +1,3 @@
+WARNING:root:PaddleOCR not available. Image parsing will be disabled.
+WARNING:root:vLLM not available, falling back to transformers
+Fetching 30 files:   0%|          | 0/30 [00:00<?, ?it/s]Fetching 30 files: 100%|██████████| 30/30 [00:00<00:00, 9079.24it/s]

@@ -1,0 +1,49 @@
+# Core Dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+gradio==4.8.0
+
+# Document Parsing
+PyMuPDF==1.23.8
+python-pptx==0.6.23
+openpyxl==3.1.2
+python-docx==1.1.0
+Pillow==10.1.0
+paddlepaddle>=2.6.2
+paddleocr==2.7.0
+reportlab==4.0.7
+pyyaml==6.0.1
+
+# Embeddings & NLP
+sentence-transformers==2.2.2
+FlagEmbedding==1.2.10
+transformers==4.36.2
+torch==2.1.2
+accelerate==0.25.0
+
+# Vector Database
+qdrant-client==1.7.0
+
+# Search & Ranking
+rank-bm25==0.2.2
+kiwipiepy==0.17.0
+
+# LLM Inference
+vllm==0.2.7
+openai==1.6.1
+
+# Caching & Storage
+redis==5.0.1
+diskcache==5.6.3
+
+# Utilities
+pydantic==2.5.2
+python-dotenv==1.0.0
+tqdm==4.66.1
+watchdog==3.0.0
+aiofiles==23.2.1
+
+# Development
+pytest==7.4.3
+black==23.12.1

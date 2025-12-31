@@ -1,0 +1,74 @@
+# AI Agent Configuration
+
+# 데이터 경로
+data:
+  network_drive: "/dais04/DO_NOT_DELETE/HD_AI_Hackathon/data/network_drive"
+  synthetic_files: "/dais04/DO_NOT_DELETE/HD_AI_Hackathon/data/synthetic_files"
+  qdrant_storage: "/dais04/DO_NOT_DELETE/HD_AI_Hackathon/qdrant_storage"
+  cache_dir: "/dais04/DO_NOT_DELETE/HD_AI_Hackathon/cache"
+
+# 임베딩 모델 설정
+embedding:
+  model_name: "BAAI/bge-m3"
+  device: "cuda"
+  batch_size: 32
+  max_length: 8192
+  use_fp16: true
+
+# LLM 설정
+llm:
+  enabled: true  # 요약 기능 사용 여부 (GPU 메모리 24GB+ 필요)
+  model_name: "Qwen/Qwen2.5-14B-Instruct"
+  device: "cuda"
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.85
+  max_model_len: 32768
+  temperature: 0.1
+  top_p: 0.9
+  max_tokens: 500
+
+# Qdrant 설정
+qdrant:
+  host: "localhost"
+  port: 6333
+  collection_name: "company_files"
+  vector_size: 1024
+  distance: "Cosine"
+
+# 검색 설정
+search:
+  top_k: 20
+  rerank_top_k: 5
+  bm25_weight: 0.4
+  semantic_weight: 0.6
+
+# 추천 설정
+recommendation:
+  max_results: 10
+  similarity_threshold: 0.7
+  temporal_window_hours: 24
+
+# 파일 파싱 설정
+parsing:
+  supported_formats:
+    - "pdf"
+    - "docx"
+    - "pptx"
+    - "xlsx"
+    - "jpg"
+    - "png"
+    - "jpeg"
+  chunk_size: 512
+  chunk_overlap: 50
+
+# OCR 설정
+ocr:
+  lang: "korean"
+  use_angle_cls: true
+  use_gpu: true
+
+# 서버 설정
+server:
+  host: "0.0.0.0"
+  port: 8000
+  reload: false
