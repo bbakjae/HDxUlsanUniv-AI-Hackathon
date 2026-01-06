@@ -3,6 +3,10 @@
 Gradio 기반 챗봇 UI + 전체 파이프라인 통합
 """
 
+import os
+# Gradio 오프라인 모드 설정 (외부 CDN 의존성 제거)
+os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
+
 import sys
 from pathlib import Path
 import yaml
@@ -11,7 +15,9 @@ from typing import List, Dict, Tuple, Optional
 import gradio as gr
 import numpy as np
 import hashlib
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 
 # 프로젝트 루트 경로 추가
 project_root = Path(__file__).parent.parent
@@ -22,7 +28,7 @@ from src.embeddings.embedding_model import BGEM3Embedder
 from src.search.vector_store import QdrantVectorStore
 from src.search.bm25_search import BM25SearchEngine
 from src.search.hybrid_search import HybridSearchEngine
-from src.llm.qwen_model import QwenSummarizer, LLMConfig
+from src.llm.qwen_model import QwenSummarizer, CachedSummarizer, LLMConfig
 from src.recommend.recommender import FileRecommender
 
 logging.basicConfig(
@@ -30,6 +36,260 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+class QueryParser:
+    """
+    자연어 쿼리 파싱 - 시간 표현, 필터 조건 추출
+    """
+
+    # 시간 표현 패턴
+    TIME_PATTERNS = {
+        # 상대 시간 표현
+        r'작년': ('year', -1),
+        r'올해': ('year', 0),
+        r'재작년': ('year', -2),
+        r'내년': ('year', 1),
+        r'지난\s*달': ('month', -1),
+        r'이번\s*달': ('month', 0),
+        r'저번\s*달': ('month', -1),
+        r'다음\s*달': ('month', 1),
+        r'지난\s*주': ('week', -1),
+        r'이번\s*주': ('week', 0),
+        r'저번\s*주': ('week', -1),
+        r'다음\s*주': ('week', 1),
+        r'어제': ('day', -1),
+        r'오늘': ('day', 0),
+        r'그제': ('day', -2),
+        r'내일': ('day', 1),
+        r'최근\s*(\d+)\s*일': ('recent_days', None),
+        r'최근\s*(\d+)\s*주': ('recent_weeks', None),
+        r'최근\s*(\d+)\s*개월': ('recent_months', None),
+        r'(\d+)\s*일\s*전': ('days_ago', None),
+        r'(\d+)\s*주\s*전': ('weeks_ago', None),
+        r'(\d+)\s*개월\s*전': ('months_ago', None),
+        # 절대 연도 (2020~2030)
+        r'(20[2-3]\d)년': ('absolute_year', None),
+        # 상반기/하반기
+        r'(20[2-3]\d)년?\s*상반기': ('half_year_1', None),
+        r'(20[2-3]\d)년?\s*하반기': ('half_year_2', None),
+        r'상반기': ('current_half_1', None),
+        r'하반기': ('current_half_2', None),
+        # 분기
+        r'(\d)분기': ('quarter', None),
+    }
+
+    # 파일 타입 패턴
+    FILE_TYPE_PATTERNS = {
+        r'pdf\s*(파일|문서)?': 'pdf',
+        r'워드\s*(파일|문서)?': 'docx',
+        r'docx?\s*(파일|문서)?': 'docx',
+        r'엑셀\s*(파일|문서)?': 'xlsx',
+        r'xlsx?\s*(파일|문서)?': 'xlsx',
+        r'파워포인트\s*(파일|문서)?': 'pptx',
+        r'pptx?\s*(파일|문서)?': 'pptx',
+        r'ppt\s*(파일|문서)?': 'pptx',
+        r'이미지\s*(파일)?': 'image',
+        r'사진\s*(파일)?': 'image',
+        r'(png|jpg|jpeg)\s*(파일)?': 'image',
+    }
+
+    # 부서 패턴
+    DEPARTMENT_PATTERNS = {
+        r'기획팀': '기획팀',
+        r'개발팀': '개발팀',
+        r'마케팅팀': '마케팅팀',
+        r'영업팀': '영업팀',
+        r'인사팀': '인사팀',
+        r'재무팀': '재무팀',
+        r'디자인팀': '디자인팀',
+        r'품질관리팀': '품질관리팀',
+        r'품질팀': '품질관리팀',
+    }
+
+    def __init__(self):
+        self.now = datetime.now()
+
+    def parse(self, query: str) -> Dict:
+        """
+        쿼리를 파싱하여 필터 조건과 정제된 쿼리 반환
+
+        Args:
+            query: 원본 쿼리
+
+        Returns:
+            {
+                'cleaned_query': str,  # 필터 표현 제거된 쿼리
+                'date_filter': {       # 날짜 필터
+                    'start_date': datetime,
+                    'end_date': datetime
+                },
+                'file_type': str,      # 파일 타입 필터
+                'department': str      # 부서 필터
+            }
+        """
+        result = {
+            'cleaned_query': query,
+            'date_filter': None,
+            'file_type': None,
+            'department': None
+        }
+
+        cleaned_query = query
+
+        # 1. 시간 표현 파싱
+        date_filter = self._parse_time_expression(query)
+        if date_filter:
+            result['date_filter'] = date_filter
+            # 시간 표현 제거
+            for pattern in self.TIME_PATTERNS.keys():
+                cleaned_query = re.sub(pattern, '', cleaned_query, flags=re.IGNORECASE)
+
+        # 2. 파일 타입 파싱
+        for pattern, file_type in self.FILE_TYPE_PATTERNS.items():
+            if re.search(pattern, query, re.IGNORECASE):
+                result['file_type'] = file_type
+                cleaned_query = re.sub(pattern, '', cleaned_query, flags=re.IGNORECASE)
+                break
+
+        # 3. 부서 파싱
+        for pattern, department in self.DEPARTMENT_PATTERNS.items():
+            if re.search(pattern, query, re.IGNORECASE):
+                result['department'] = department
+                # 부서명은 검색에 유용하므로 제거하지 않음
+                break
+
+        # 정제된 쿼리 (불필요한 공백 제거)
+        result['cleaned_query'] = ' '.join(cleaned_query.split()).strip()
+
+        return result
+
+    def _parse_time_expression(self, query: str) -> Optional[Dict]:
+        """시간 표현을 파싱하여 날짜 범위 반환"""
+        for pattern, (time_type, offset) in self.TIME_PATTERNS.items():
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                return self._calculate_date_range(time_type, offset, match)
+        return None
+
+    def _calculate_date_range(self, time_type: str, offset: Optional[int], match) -> Dict:
+        """시간 타입에 따른 날짜 범위 계산"""
+        now = self.now
+
+        if time_type == 'year':
+            year = now.year + offset
+            return {
+                'start_date': datetime(year, 1, 1),
+                'end_date': datetime(year, 12, 31, 23, 59, 59)
+            }
+
+        elif time_type == 'month':
+            target = now + relativedelta(months=offset)
+            start = datetime(target.year, target.month, 1)
+            end = start + relativedelta(months=1) - timedelta(seconds=1)
+            return {'start_date': start, 'end_date': end}
+
+        elif time_type == 'week':
+            # 주의 시작을 월요일로 가정
+            days_since_monday = now.weekday()
+            week_start = now - timedelta(days=days_since_monday) + timedelta(weeks=offset)
+            week_start = datetime(week_start.year, week_start.month, week_start.day)
+            week_end = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+            return {'start_date': week_start, 'end_date': week_end}
+
+        elif time_type == 'day':
+            target = now + timedelta(days=offset)
+            start = datetime(target.year, target.month, target.day)
+            end = start + timedelta(hours=23, minutes=59, seconds=59)
+            return {'start_date': start, 'end_date': end}
+
+        elif time_type == 'recent_days':
+            days = int(match.group(1))
+            return {
+                'start_date': now - timedelta(days=days),
+                'end_date': now
+            }
+
+        elif time_type == 'recent_weeks':
+            weeks = int(match.group(1))
+            return {
+                'start_date': now - timedelta(weeks=weeks),
+                'end_date': now
+            }
+
+        elif time_type == 'recent_months':
+            months = int(match.group(1))
+            return {
+                'start_date': now - relativedelta(months=months),
+                'end_date': now
+            }
+
+        elif time_type == 'days_ago':
+            days = int(match.group(1))
+            target = now - timedelta(days=days)
+            return {
+                'start_date': datetime(target.year, target.month, target.day),
+                'end_date': datetime(target.year, target.month, target.day, 23, 59, 59)
+            }
+
+        elif time_type == 'weeks_ago':
+            weeks = int(match.group(1))
+            target = now - timedelta(weeks=weeks)
+            start = target - timedelta(days=target.weekday())
+            return {
+                'start_date': datetime(start.year, start.month, start.day),
+                'end_date': datetime(start.year, start.month, start.day) + timedelta(days=6, hours=23, minutes=59, seconds=59)
+            }
+
+        elif time_type == 'months_ago':
+            months = int(match.group(1))
+            target = now - relativedelta(months=months)
+            start = datetime(target.year, target.month, 1)
+            end = start + relativedelta(months=1) - timedelta(seconds=1)
+            return {'start_date': start, 'end_date': end}
+
+        elif time_type == 'absolute_year':
+            year = int(match.group(1))
+            return {
+                'start_date': datetime(year, 1, 1),
+                'end_date': datetime(year, 12, 31, 23, 59, 59)
+            }
+
+        elif time_type == 'half_year_1':
+            year = int(match.group(1))
+            return {
+                'start_date': datetime(year, 1, 1),
+                'end_date': datetime(year, 6, 30, 23, 59, 59)
+            }
+
+        elif time_type == 'half_year_2':
+            year = int(match.group(1))
+            return {
+                'start_date': datetime(year, 7, 1),
+                'end_date': datetime(year, 12, 31, 23, 59, 59)
+            }
+
+        elif time_type == 'current_half_1':
+            return {
+                'start_date': datetime(now.year, 1, 1),
+                'end_date': datetime(now.year, 6, 30, 23, 59, 59)
+            }
+
+        elif time_type == 'current_half_2':
+            return {
+                'start_date': datetime(now.year, 7, 1),
+                'end_date': datetime(now.year, 12, 31, 23, 59, 59)
+            }
+
+        elif time_type == 'quarter':
+            quarter = int(match.group(1))
+            start_month = (quarter - 1) * 3 + 1
+            return {
+                'start_date': datetime(now.year, start_month, 1),
+                'end_date': datetime(now.year, start_month, 1) + relativedelta(months=3) - timedelta(seconds=1)
+            }
+
+        return None
 
 
 class AIAgentPipeline:
@@ -87,7 +347,7 @@ class AIAgentPipeline:
             vector_weight=self.config['search']['semantic_weight']
         )
 
-        # 5. LLM (프로토타입에서는 선택적으로 로드)
+        # 5. LLM (프로토타입에서는 선택적으로 로드) + 캐싱 적용
         self.summarizer = None
         if self.llm_enabled:
             try:
@@ -99,7 +359,10 @@ class AIAgentPipeline:
                     max_tokens=self.config['llm']['max_tokens'],
                     use_vllm=False  # 프로토타입에서는 transformers 사용
                 )
-                self.summarizer = QwenSummarizer(llm_config)
+                base_summarizer = QwenSummarizer(llm_config)
+                # CachedSummarizer로 래핑하여 동일 문서 재요약 방지
+                self.summarizer = CachedSummarizer(base_summarizer, cache_size=500)
+                logger.info("LLM loaded with caching enabled (cache_size=500)")
             except Exception as e:
                 logger.warning(f"LLM loading failed (optional): {e}")
         else:
@@ -110,6 +373,9 @@ class AIAgentPipeline:
             temporal_window_hours=self.config['recommendation']['temporal_window_hours']
         )
 
+        # 7. 쿼리 파서 (시간 표현, 필터 추출)
+        self.query_parser = QueryParser()
+
         logger.info("All components initialized successfully!")
 
     def search_files(
@@ -117,7 +383,9 @@ class AIAgentPipeline:
         query: str,
         top_k: int = 5,
         include_summary: bool = True,
-        include_recommendations: bool = True
+        include_recommendations: bool = True,
+        file_type_filter: Optional[str] = None,
+        sort_by: str = 'relevance'  # 'relevance', 'date_desc', 'date_asc', 'name'
     ) -> Dict:
         """
         파일 검색 메인 함수
@@ -127,27 +395,72 @@ class AIAgentPipeline:
             top_k: 반환할 결과 수
             include_summary: 요약 포함 여부
             include_recommendations: 추천 포함 여부
+            file_type_filter: 파일 타입 필터 (None, 'pdf', 'docx', 'pptx', 'xlsx', 'image')
+            sort_by: 정렬 기준 ('relevance', 'date_desc', 'date_asc', 'name')
 
         Returns:
             검색 결과 딕셔너리
         """
         logger.info(f"Searching for: '{query}'")
 
-        # 1. 쿼리 임베딩 생성
-        query_embedding = self.embedder.encode_queries(query)
+        # 0. 쿼리 파싱 (시간 표현, 파일 타입 자동 추출)
+        parsed = self.query_parser.parse(query)
+        search_query = parsed['cleaned_query'] or query
 
-        # 2. 하이브리드 검색
-        raw_results = self.hybrid_engine.search(
-            query=query,
-            query_embedding=query_embedding,
-            top_k=self.config['search']['top_k'],
-            final_top_k=top_k
-        )
+        # UI에서 지정한 필터가 없으면 쿼리에서 추출한 필터 사용
+        if not file_type_filter and parsed['file_type']:
+            file_type_filter = parsed['file_type']
+
+        # 적용된 필터 정보 (사용자에게 표시용)
+        applied_filters = {
+            'date_filter': parsed['date_filter'],
+            'file_type': file_type_filter,
+            'department': parsed['department']
+        }
+
+        logger.info(f"Parsed query: '{search_query}', Filters: {applied_filters}")
+
+        # 1. 쿼리 임베딩 생성
+        query_embedding = self.embedder.encode_queries(search_query)
+
+        # 2. 하이브리드 검색 (필터 적용)
+        filter_conditions = {}
+        if file_type_filter:
+            if file_type_filter == 'image':
+                # 이미지는 여러 확장자 포함
+                filter_conditions['file_type'] = ['png', 'jpg', 'jpeg']
+            else:
+                filter_conditions['file_type'] = file_type_filter
+
+        if filter_conditions:
+            raw_results = self.hybrid_engine.search_with_filter(
+                query=search_query,
+                query_embedding=query_embedding,
+                filter_conditions=filter_conditions,
+                top_k=self.config['search']['top_k']
+            )
+        else:
+            raw_results = self.hybrid_engine.search(
+                query=search_query,
+                query_embedding=query_embedding,
+                top_k=self.config['search']['top_k'],
+                final_top_k=top_k * 2  # 필터링 후 줄어들 수 있으므로 여유있게
+            )
 
         # 2-1. 파일 단위로 결과 집계 (청크 중복 제거)
         results = self._aggregate_results_by_file(raw_results)
 
-        logger.info(f"Found {len(results)} results")
+        # 2-2. 날짜 필터 적용 (쿼리에서 추출된 시간 표현 기반)
+        if parsed['date_filter']:
+            results = self._apply_date_filter(results, parsed['date_filter'])
+
+        # 2-3. 정렬 적용
+        results = self._apply_sorting(results, sort_by)
+
+        # top_k 제한
+        results = results[:top_k]
+
+        logger.info(f"Found {len(results)} results (after filters and sorting)")
 
         # 3. 요약 생성 (선택적)
         if include_summary and self.summarizer:
@@ -263,8 +576,85 @@ class AIAgentPipeline:
         return {
             'query': query,
             'results': results,
-            'total_found': len(results)
+            'total_found': len(results),
+            'applied_filters': applied_filters,
+            'sort_by': sort_by
         }
+
+    def _apply_date_filter(self, results: List[Dict], date_filter: Dict) -> List[Dict]:
+        """날짜 필터 적용"""
+        if not date_filter:
+            return results
+
+        start_date = date_filter.get('start_date')
+        end_date = date_filter.get('end_date')
+
+        if not start_date or not end_date:
+            return results
+
+        filtered = []
+        for result in results:
+            meta = result.get('metadata', {})
+            modified_time_str = meta.get('modified_time', '')
+
+            if not modified_time_str:
+                # 날짜 정보 없으면 포함 (필터링하지 않음)
+                filtered.append(result)
+                continue
+
+            try:
+                # ISO 형식 파싱
+                modified_time = datetime.fromisoformat(modified_time_str.replace('Z', '+00:00'))
+                # timezone 제거하여 비교
+                modified_time = modified_time.replace(tzinfo=None)
+
+                if start_date <= modified_time <= end_date:
+                    filtered.append(result)
+            except (ValueError, TypeError):
+                # 파싱 실패 시 포함
+                filtered.append(result)
+
+        return filtered
+
+    def _apply_sorting(self, results: List[Dict], sort_by: str) -> List[Dict]:
+        """정렬 적용"""
+        if not results:
+            return results
+
+        if sort_by == 'relevance':
+            # 기본: 점수 내림차순 (이미 정렬되어 있음)
+            return sorted(results, key=lambda r: r.get('score', 0), reverse=True)
+
+        elif sort_by == 'date_desc':
+            # 최신순
+            def get_date(r):
+                meta = r.get('metadata', {})
+                time_str = meta.get('modified_time', '')
+                try:
+                    return datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                except:
+                    return datetime.min
+            return sorted(results, key=get_date, reverse=True)
+
+        elif sort_by == 'date_asc':
+            # 오래된순
+            def get_date(r):
+                meta = r.get('metadata', {})
+                time_str = meta.get('modified_time', '')
+                try:
+                    return datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                except:
+                    return datetime.max
+            return sorted(results, key=get_date, reverse=False)
+
+        elif sort_by == 'name':
+            # 파일명순
+            def get_name(r):
+                meta = r.get('metadata', {})
+                return meta.get('file_name', '') or ''
+            return sorted(results, key=get_name)
+
+        return results
 
     def _extract_file_id(self, result: Dict) -> str:
         """결과에서 file_id 추출 (없으면 chunk_id 기반 생성)"""
@@ -523,7 +913,9 @@ class GradioChatInterface:
         top_k: int,
         include_summary: bool,
         include_recommendations: bool,
-        show_explanation: bool
+        show_explanation: bool,
+        file_type_filter: str,
+        sort_by: str
     ) -> Tuple[str, List[Dict]]:
         """
         챗봇 응답 생성
@@ -535,6 +927,8 @@ class GradioChatInterface:
             include_summary: 요약 포함 여부
             include_recommendations: 추천 포함 여부
             show_explanation: 검색 설명 표시 여부
+            file_type_filter: 파일 타입 필터
+            sort_by: 정렬 기준
 
         Returns:
             (응답 텍스트, 업데이트된 히스토리)
@@ -563,7 +957,9 @@ class GradioChatInterface:
                     top_k,
                     include_summary,
                     include_recommendations,
-                    show_explanation
+                    show_explanation,
+                    file_type_filter,
+                    sort_by
                 )
 
             # 히스토리 업데이트 (Gradio 6.x 형식)
@@ -572,11 +968,33 @@ class GradioChatInterface:
             return "", history
 
         except Exception as e:
-            logger.error(f"Chat error: {e}")
-            error_response = f"오류가 발생했습니다: {str(e)}"
+            logger.error(f"Chat error: {e}", exc_info=True)
+            error_response = self._format_user_friendly_error(e)
             history.append({"role": "user", "content": message})
             history.append({"role": "assistant", "content": error_response})
             return "", history
+
+    def _format_user_friendly_error(self, error: Exception) -> str:
+        """사용자 친화적인 에러 메시지 생성"""
+        error_str = str(error).lower()
+
+        if 'qdrant' in error_str or 'connection' in error_str:
+            return "⚠️ **검색 서비스 연결 오류**\n\n검색 서비스에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요.\n\n관리자에게 문의가 필요한 경우 IT 지원팀에 연락해주세요."
+
+        elif 'index' in error_str or 'bm25' in error_str:
+            return "⚠️ **검색 인덱스 준비 중**\n\n검색 인덱스가 아직 준비되지 않았습니다. 관리자가 인덱싱을 완료한 후 다시 시도해주세요."
+
+        elif 'memory' in error_str or 'cuda' in error_str or 'gpu' in error_str:
+            return "⚠️ **시스템 리소스 부족**\n\n현재 시스템 리소스가 부족합니다. 잠시 후 다시 시도하거나, 요약 기능을 비활성화하고 검색해보세요."
+
+        elif 'timeout' in error_str:
+            return "⚠️ **요청 시간 초과**\n\n검색 요청이 시간 초과되었습니다. 검색어를 더 구체적으로 입력하거나, 결과 수를 줄여서 다시 시도해주세요."
+
+        elif 'file' in error_str and 'not found' in error_str:
+            return "⚠️ **파일을 찾을 수 없음**\n\n요청한 파일을 찾을 수 없습니다. 파일이 이동되었거나 삭제되었을 수 있습니다."
+
+        else:
+            return f"⚠️ **오류가 발생했습니다**\n\n죄송합니다. 예상치 못한 오류가 발생했습니다.\n\n다시 시도해주시고, 문제가 지속되면 IT 지원팀에 문의해주세요.\n\n(오류 코드: {type(error).__name__})"
 
     def _handle_search(
         self,
@@ -584,14 +1002,21 @@ class GradioChatInterface:
         top_k: int,
         include_summary: bool,
         include_recommendations: bool,
-        show_explanation: bool
+        show_explanation: bool,
+        file_type_filter: str,
+        sort_by: str
     ) -> str:
         """검색 처리"""
+        # '전체' 선택 시 None으로 변환
+        actual_filter = None if file_type_filter == '전체' else file_type_filter
+
         search_result = self.pipeline.search_files(
             query=query,
             top_k=top_k,
             include_summary=include_summary,
-            include_recommendations=include_recommendations
+            include_recommendations=include_recommendations,
+            file_type_filter=actual_filter,
+            sort_by=sort_by
         )
 
         # 검색 결과 저장 (후속 질문용)
@@ -639,27 +1064,73 @@ class GradioChatInterface:
 
     def _get_help_message(self) -> str:
         """도움말 메시지"""
-        return """## 사내 파일 검색 AI Agent 사용법
+        return """## 📖 사내 파일 검색 AI Agent 사용법
 
-### 기본 기능
-- **파일 검색**: 자연어로 검색어를 입력하세요.
-  - 예: "2024년 매출 보고서", "고객 만족도 향상 전략"
+### 🔍 기본 검색
+자연어로 검색어를 입력하세요. 시스템이 키워드와 의미를 모두 분석하여 관련 문서를 찾아줍니다.
 
-### 특수 명령
-- **중복 탐지**: "중복 검사" 또는 "중복 탐지"를 입력하면 유사한 문서를 찾아줍니다.
-- **추천**: 검색 후 "추천" 또는 "유사한 파일"을 입력하면 연관 파일을 추천합니다.
-- **질문**: 검색 후 검색 결과에 대해 질문할 수 있습니다. (LLM 활성화 필요)
+### ⏰ 시간 표현 (자동 인식)
+검색어에 시간 표현을 포함하면 자동으로 날짜 필터가 적용됩니다.
+- **상대 시간**: "작년", "지난달", "이번 주", "어제", "최근 3개월"
+- **절대 시간**: "2024년", "2023년 상반기", "1분기"
+- **예시**: "작년 안전 점검 보고서" → 2025년 문서만 검색
 
-### 검색 옵션
-- **결과 개수**: 슬라이더로 검색 결과 수를 조절합니다.
-- **요약 생성**: 검색된 문서의 요약을 생성합니다. (LLM 활성화 필요)
-- **연관 파일 추천**: 검색 결과와 유사한 파일을 추천합니다.
-- **검색 설명 표시**: 검색 결과에 대한 상세 설명(매칭 키워드, 점수 분해)을 표시합니다.
+### 📁 파일 타입 (자동 인식)
+검색어에 파일 타입을 포함하면 자동으로 필터링됩니다.
+- "PDF 파일", "워드 문서", "엑셀", "파워포인트", "이미지"
+- **예시**: "마케팅팀 PDF 문서" → PDF 파일만 검색
 
-### 팁
-- 구체적인 키워드를 사용하면 더 정확한 결과를 얻을 수 있습니다.
-- 한글과 영어 모두 지원됩니다.
+### 🏢 부서명 (자동 인식)
+부서명이 포함되면 해당 부서 관련 문서를 우선 검색합니다.
+- 기획팀, 개발팀, 마케팅팀, 영업팀, 인사팀, 재무팀, 디자인팀, 품질관리팀
+
+### ⚙️ 검색 설정 (오른쪽 패널)
+- **파일 타입 필터**: 특정 파일 형식만 검색
+- **정렬 기준**: 관련도순, 최신순, 오래된순, 파일명순
+- **검색 설명 표시**: 왜 이 문서가 검색되었는지 근거 표시
+- **연관 파일 추천**: 검색 결과와 유사한 파일 추천
+- **요약 생성**: LLM이 문서 내용을 요약 (활성화 필요)
+
+### 🔧 특수 명령
+- **"중복 검사"**: 유사하거나 동일한 문서 그룹을 찾아줍니다
+- **"추천" / "유사한 파일"**: 이전 검색 결과 기반 연관 파일 추천
+- **"/help"**: 이 도움말 표시
+
+### 💬 후속 질문 (LLM 활성화 시)
+검색 후 결과에 대해 질문할 수 있습니다.
+- "이 문서의 핵심 내용이 뭐야?"
+- "ROI가 얼마라고 했어?"
+
+### 💡 검색 팁
+1. **구체적으로**: "보고서" 보다 "2024년 상반기 매출 보고서"
+2. **시간 활용**: "작년 회의록", "최근 1주일 계획서"
+3. **파일 타입 지정**: "엑셀로 된 예산 자료"
+4. **부서 언급**: "마케팅팀 캠페인 분석"
 """
+
+    def _highlight_keywords(self, text: str, keywords: List[str]) -> str:
+        """
+        텍스트에서 키워드를 하이라이트 처리
+
+        Args:
+            text: 원본 텍스트
+            keywords: 하이라이트할 키워드 리스트
+
+        Returns:
+            키워드가 **강조**된 텍스트
+        """
+        if not keywords or not text:
+            return text
+
+        highlighted = text
+        for keyword in keywords:
+            if len(keyword) < 2:  # 너무 짧은 키워드는 제외
+                continue
+            # 대소문자 무시하고 매칭, 원본 케이스 유지하면서 강조
+            pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+            highlighted = pattern.sub(lambda m: f"**{m.group()}**", highlighted)
+
+        return highlighted
 
     def _format_search_results(
         self,
@@ -680,10 +1151,21 @@ class GradioChatInterface:
             file_type = meta.get('file_type', 'N/A')
             score = result.get('score', 0)
 
+            # 매칭 키워드 추출 (하이라이트용)
+            matched_keywords = []
+            if 'explanation' in result:
+                matched_keywords = result['explanation'].get('matched_keywords', [])
+
             output += f"### {i+1}. {file_name}\n"
             output += f"- **경로:** `{file_path}`\n"
             output += f"- **타입:** {file_type}\n"
             output += f"- **통합 점수:** {score:.4f}\n"
+
+            # 원문 바로가기 버튼 (파일 경로 링크)
+            if file_path and file_path != 'N/A':
+                # file:// 프로토콜로 로컬 파일 링크 생성
+                file_link = f"file://{file_path}"
+                output += f"- 📂 [원문 열기]({file_link})\n"
 
             # 검색 설명 (근거) 표시
             if show_explanation and 'explanation' in result:
@@ -701,21 +1183,23 @@ class GradioChatInterface:
                 output += f"- BM25(키워드) 점수: {bm25_score:.4f}\n"
                 output += f"- 벡터(의미) 점수: {vector_score:.4f}\n"
 
-                # 매칭 키워드
-                matched = exp.get('matched_keywords', [])
-                if matched:
-                    output += f"- 매칭 키워드: {', '.join(matched[:5])}\n"
+                # 매칭 키워드 (하이라이트된 형태로 표시)
+                if matched_keywords:
+                    highlighted_keywords = [f"**{kw}**" for kw in matched_keywords[:5]]
+                    output += f"- 매칭 키워드: {', '.join(highlighted_keywords)}\n"
 
             # 요약
             if 'summary' in result and result['summary'] != "요약 미사용":
                 output += f"\n**요약:** {result['summary']}\n"
 
-            # 내용 미리보기
-            text_preview = result.get('text', '')[:200]
+            # 내용 미리보기 (키워드 하이라이트 적용)
+            text_preview = result.get('text', '')[:300]
             if not text_preview:
-                text_preview = meta.get('text', '')[:200]
+                text_preview = meta.get('text', '')[:300]
             if text_preview:
-                output += f"\n**미리보기:** {text_preview}...\n"
+                # 키워드 하이라이트 적용
+                highlighted_preview = self._highlight_keywords(text_preview, matched_keywords)
+                output += f"\n**미리보기:** {highlighted_preview}...\n"
 
             output += "\n---\n"
 
@@ -725,7 +1209,13 @@ class GradioChatInterface:
             if recommendations:
                 output += "\n## 연관 파일 추천\n"
                 for i, rec in enumerate(recommendations[:3]):
-                    output += f"- **{rec.get('file_name', 'Unknown')}** (점수: {rec.get('recommendation_score', 0):.2f})\n"
+                    rec_path = rec.get('path', 'N/A')
+                    rec_name = rec.get('file_name', 'Unknown')
+                    rec_score = rec.get('recommendation_score', 0)
+                    output += f"- **{rec_name}** (점수: {rec_score:.2f})"
+                    if rec_path and rec_path != 'N/A':
+                        output += f" - 📂 [열기](file://{rec_path})"
+                    output += "\n"
 
         return output
 
@@ -784,13 +1274,13 @@ class GradioChatInterface:
         llm_available = self.pipeline.summarizer is not None
 
         with gr.Blocks(title="사내 파일 검색 AI Agent") as demo:
-            gr.Markdown("# 사내 네트워크 드라이브 파일 검색 AI Agent")
+            gr.Markdown("# 🔍 사내 네트워크 드라이브 파일 검색 AI Agent")
             gr.Markdown("자연어로 파일을 검색하고, 관련 문서를 추천받으세요. 대화형 인터페이스로 편리하게 사용할 수 있습니다.")
 
             # 상태 표시
-            status_text = "LLM 활성화" if llm_available else "LLM 비활성화 (요약/질문답변 불가)"
+            status_text = "✅ LLM 활성화 (요약/질문답변 가능)" if llm_available else "⚠️ LLM 비활성화 (요약/질문답변 불가)"
             status_color = "green" if llm_available else "orange"
-            gr.Markdown(f"> **상태:** <span style='color:{status_color}'>{status_text}</span>")
+            gr.Markdown(f"> **시스템 상태:** <span style='color:{status_color}'>{status_text}</span>")
 
             with gr.Row():
                 # 메인 채팅 영역
@@ -803,15 +1293,15 @@ class GradioChatInterface:
                     with gr.Row():
                         msg_input = gr.Textbox(
                             label="메시지 입력",
-                            placeholder="검색어를 입력하세요. 예: 2024년 매출 보고서, 중복 검사, /help",
+                            placeholder="검색어를 입력하세요. 예: '작년 안전 점검 보고서', '마케팅팀 PDF 파일', '중복 검사'",
                             lines=2,
                             scale=4
                         )
-                        send_btn = gr.Button("전송", variant="primary", scale=1)
+                        send_btn = gr.Button("🔍 검색", variant="primary", scale=1)
 
                 # 설정 패널
                 with gr.Column(scale=1):
-                    gr.Markdown("### 검색 설정")
+                    gr.Markdown("### ⚙️ 검색 설정")
 
                     top_k_slider = gr.Slider(
                         minimum=1,
@@ -820,6 +1310,29 @@ class GradioChatInterface:
                         step=1,
                         label="검색 결과 수"
                     )
+
+                    # 파일 타입 필터 (신규)
+                    file_type_filter = gr.Dropdown(
+                        choices=["전체", "pdf", "docx", "pptx", "xlsx", "image"],
+                        value="전체",
+                        label="📁 파일 타입 필터",
+                        info="특정 파일 타입만 검색"
+                    )
+
+                    # 정렬 옵션 (신규)
+                    sort_by = gr.Dropdown(
+                        choices=[
+                            ("관련도순", "relevance"),
+                            ("최신순", "date_desc"),
+                            ("오래된순", "date_asc"),
+                            ("파일명순", "name")
+                        ],
+                        value="relevance",
+                        label="📊 정렬 기준"
+                    )
+
+                    gr.Markdown("---")
+                    gr.Markdown("### 📋 표시 옵션")
 
                     show_explanation = gr.Checkbox(
                         label="검색 설명 표시 (매칭 근거)",
@@ -831,7 +1344,7 @@ class GradioChatInterface:
                         value=True
                     )
 
-                    summary_label = "요약 생성" if llm_available else "요약 생성 (비활성화)"
+                    summary_label = "📝 요약 생성" if llm_available else "📝 요약 생성 (비활성화)"
                     include_summary = gr.Checkbox(
                         label=summary_label,
                         value=False,
@@ -839,19 +1352,22 @@ class GradioChatInterface:
                     )
 
                     gr.Markdown("---")
-                    gr.Markdown("### 빠른 명령")
+                    gr.Markdown("### 🚀 빠른 명령")
 
-                    help_btn = gr.Button("도움말", size="sm")
-                    duplicate_btn = gr.Button("중복 문서 탐지", size="sm")
-                    clear_btn = gr.Button("대화 초기화", size="sm", variant="secondary")
+                    help_btn = gr.Button("❓ 도움말", size="sm")
+                    duplicate_btn = gr.Button("🔄 중복 문서 탐지", size="sm")
+                    clear_btn = gr.Button("🗑️ 대화 초기화", size="sm", variant="secondary")
 
             # 예시 질의
-            gr.Markdown("### 예시 질의")
+            gr.Markdown("### 💡 예시 질의")
+            gr.Markdown("시간 표현, 파일 타입, 부서명을 포함하면 자동으로 필터링됩니다.")
             gr.Examples(
                 examples=[
-                    ["2024년 매출 보고서"],
+                    ["작년 안전 점검 보고서"],
+                    ["마케팅팀 PDF 문서"],
+                    ["2024년 상반기 매출 실적"],
+                    ["최근 3개월 회의록"],
                     ["고객 만족도 향상 전략"],
-                    ["AI 자동화 프로젝트"],
                     ["중복 검사"],
                     ["/help"]
                 ],
@@ -859,29 +1375,30 @@ class GradioChatInterface:
             )
 
             # 이벤트 핸들러
-            def submit_message(message, history, top_k, include_summary, include_recommendations, show_explanation):
+            def submit_message(message, history, top_k, include_summary, include_recommendations, show_explanation, file_type_filter, sort_by):
                 return self.chat_response(
-                    message, history, top_k, include_summary, include_recommendations, show_explanation
+                    message, history, top_k, include_summary, include_recommendations, show_explanation, file_type_filter, sort_by
                 )
 
             # 전송 버튼 클릭
             send_btn.click(
                 fn=submit_message,
-                inputs=[msg_input, chatbot, top_k_slider, include_summary, include_recommendations, show_explanation],
+                inputs=[msg_input, chatbot, top_k_slider, include_summary, include_recommendations, show_explanation, file_type_filter, sort_by],
                 outputs=[msg_input, chatbot]
             )
 
             # Enter 키로 전송
             msg_input.submit(
                 fn=submit_message,
-                inputs=[msg_input, chatbot, top_k_slider, include_summary, include_recommendations, show_explanation],
+                inputs=[msg_input, chatbot, top_k_slider, include_summary, include_recommendations, show_explanation, file_type_filter, sort_by],
                 outputs=[msg_input, chatbot]
             )
 
             # 도움말 버튼
             def show_help(history):
                 help_msg = self._get_help_message()
-                history.append(["도움말", help_msg])
+                history.append({"role": "user", "content": "도움말"})
+                history.append({"role": "assistant", "content": help_msg})
                 return history
 
             help_btn.click(
@@ -893,7 +1410,8 @@ class GradioChatInterface:
             # 중복 탐지 버튼
             def run_duplicate(history):
                 response = self._handle_duplicate_detection()
-                history.append(["중복 문서 탐지", response])
+                history.append({"role": "user", "content": "중복 문서 탐지"})
+                history.append({"role": "assistant", "content": response})
                 return history
 
             duplicate_btn.click(
@@ -983,7 +1501,7 @@ def main():
     demo.launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,
+        share=True,  # Docker 컨테이너 외부 접속을 위해 공개 URL 생성
         quiet=False
     )
 

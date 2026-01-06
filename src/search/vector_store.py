@@ -6,6 +6,7 @@ import logging
 from typing import List, Dict, Optional, Union
 from pathlib import Path
 import numpy as np
+import hashlib
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -87,6 +88,12 @@ class QdrantVectorStore:
         else:
             logger.info(f"Using existing collection: {self.collection_name}")
 
+    def _string_to_int_id(self, string_id: str) -> int:
+        """문자열 ID를 정수 ID로 변환 (Qdrant 호환)"""
+        # MD5 해시의 처음 16자리를 정수로 변환
+        hash_hex = hashlib.md5(string_id.encode()).hexdigest()[:16]
+        return int(hash_hex, 16)
+
     def add_documents(
         self,
         ids: List[str],
@@ -107,8 +114,13 @@ class QdrantVectorStore:
         try:
             points = []
             for id_, vector, payload in zip(ids, vectors, payloads):
+                # 문자열 ID를 정수로 변환
+                int_id = self._string_to_int_id(id_)
+                # 원본 문자열 ID를 payload에 저장
+                payload['original_id'] = id_
+
                 point = PointStruct(
-                    id=id_,
+                    id=int_id,
                     vector=vector.tolist() if isinstance(vector, np.ndarray) else vector,
                     payload=payload
                 )
@@ -175,8 +187,11 @@ class QdrantVectorStore:
             ]
         """
         try:
-            # 벡터를 리스트로 변환
+            # 벡터를 1차원 리스트로 변환
             if isinstance(query_vector, np.ndarray):
+                # 다차원 배열인 경우 평탄화
+                if len(query_vector.shape) > 1:
+                    query_vector = query_vector.flatten()
                 query_vector = query_vector.tolist()
 
             # 필터 생성
@@ -184,12 +199,10 @@ class QdrantVectorStore:
             if filter_conditions:
                 query_filter = self._build_filter(filter_conditions)
 
-            # 검색 수행 (Qdrant client 1.x API)
-            # 단일 벡터 컬렉션의 경우 using="" 파라미터 사용
+            # 검색 수행 (Qdrant client 1.16+ API)
             search_result = self.client.query_points(
                 collection_name=self.collection_name,
-                query=query_vector,  # 리스트로 직접 전달
-                using="",  # 단일 unnamed 벡터 사용
+                query=query_vector,
                 limit=top_k,
                 query_filter=query_filter,
                 score_threshold=score_threshold,
@@ -200,8 +213,10 @@ class QdrantVectorStore:
             # 결과 포맷팅
             results = []
             for hit in search_result:
+                # 원본 문자열 ID 복원 (payload에 저장된 경우)
+                original_id = hit.payload.get('original_id', str(hit.id))
                 result = {
-                    'id': hit.id,
+                    'id': original_id,
                     'score': hit.score,
                     'payload': hit.payload
                 }

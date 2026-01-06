@@ -2,9 +2,10 @@
 
 # 데이터 경로
 data:
-  network_drive: "/dais04/DO_NOT_DELETE/HD_AI_Hackathon/data/network_drive"
+  # 실제 Google Drive 파일 (테스트용)
+  network_drive: "/dais04/DO_NOT_DELETE/HD_AI_Hackathon/data/google_drive_files/data"
   synthetic_files: "/dais04/DO_NOT_DELETE/HD_AI_Hackathon/data/synthetic_files"
-  qdrant_storage: "/dais04/DO_NOT_DELETE/HD_AI_Hackathon/qdrant_storage"
+  qdrant_storage: "/dais04/DO_NOT_DELETE/HD_AI_Hackathon/qdrant_storage_gdrive"
   cache_dir: "/dais04/DO_NOT_DELETE/HD_AI_Hackathon/cache"
 
 # 임베딩 모델 설정

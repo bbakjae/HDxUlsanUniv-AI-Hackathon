@@ -1,0 +1,6 @@
+WARNING:root:PaddleOCR not available. Image parsing will be disabled.
+WARNING:root:vLLM not available, falling back to transformers
+Fetching 30 files:   0%|          | 0/30 [00:00<?, ?it/s]Fetching 30 files: 100%|██████████| 30/30 [00:00<00:00, 54732.11it/s]
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading checkpoint shards:   0%|          | 0/8 [00:00<?, ?it/s]Loading checkpoint shards:  12%|█▎        | 1/8 [00:02<00:18,  2.65s/it]Loading checkpoint shards:  25%|██▌       | 2/8 [00:05<00:16,  2.81s/it]Loading checkpoint shards:  38%|███▊      | 3/8 [00:08<00:13,  2.77s/it]Loading checkpoint shards:  50%|█████     | 4/8 [00:11<00:11,  2.85s/it]Loading checkpoint shards:  62%|██████▎   | 5/8 [00:14<00:08,  2.90s/it]Loading checkpoint shards:  75%|███████▌  | 6/8 [00:16<00:05,  2.84s/it]Loading checkpoint shards:  88%|████████▊ | 7/8 [00:18<00:02,  2.36s/it]Loading checkpoint shards: 100%|██████████| 8/8 [00:18<00:00,  1.76s/it]Loading checkpoint shards: 100%|██████████| 8/8 [00:18<00:00,  2.35s/it]
+WARNING:accelerate.big_modeling:Some parameters are on the meta device because they were offloaded to the cpu.
