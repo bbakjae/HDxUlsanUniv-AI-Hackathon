@@ -12,6 +12,7 @@ from index.vector.faiss_index import (
 from vector.faiss_index import reset_index
 
 def full_indexing(root_path: str):
+    # 풀 인덱싱 다시 할 때 DB 전체 삭제
     files_col.delete_many({})
     chunks_col.delete_many({})
     delete_index_file()
@@ -19,6 +20,7 @@ def full_indexing(root_path: str):
 
     for path in scan_files(root_path):
         print(f"Indexing: {path}")
+        #file DB에 저장
         file_doc = save_file_metadata(path)
 
         #file_type: 파일확장자

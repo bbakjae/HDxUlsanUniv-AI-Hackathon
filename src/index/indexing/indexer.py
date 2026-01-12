@@ -4,6 +4,7 @@ from index.db.mongo import chunks_col
 from index.embedding.embedder import model
 from index.vector.faiss_index import add_vectors, index
 
+#벡터 DB에 저장 및 mongoDB에 chunk 컬렉션(테이블) 저장
 def index_chunks(file_doc, chunks):
     # 비어있는 청크 제외
     texts = [c for c in chunks if c.strip()]
@@ -19,7 +20,7 @@ def index_chunks(file_doc, chunks):
     # faiss에 백터 저장
     add_vectors(embeddings)
 
-    #DB에 chunk테이블 내용 저장
+    #DB에  chunk테이블 내용 저장
     for i, text in enumerate(texts):
         chunk_doc = {
             "chunk_id": str(uuid.uuid4()),
