@@ -3,10 +3,10 @@ import numpy as np
 from index.config import EMBED_DIM
 from pathlib import Path
 
+#faiss 파일 경로 설정
 BASE_DIR = Path(__file__).resolve().parent
 FAISS_DIR = BASE_DIR / "faiss"
 FAISS_DIR.mkdir(exist_ok=True)
-
 FAISS_INDEX_PATH = FAISS_DIR / "faiss.index"
 
 index = faiss.IndexFlatIP(EMBED_DIM)
@@ -30,7 +30,7 @@ def load_index():
         raise FileNotFoundError(f"FAISS index not found: {FAISS_INDEX_PATH}")
 
     index = faiss.read_index(str(FAISS_INDEX_PATH))
-    return index   # ⭐⭐⭐ 이 줄이 핵심
+    return index
 
 def delete_index_file():
     if FAISS_INDEX_PATH.exists():

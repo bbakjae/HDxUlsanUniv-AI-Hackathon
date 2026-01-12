@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from index.db.mongo import files_col
 
+#DB file 테이블 저장 데이터 템플릿
 def save_file_metadata(path: Path):
     doc = {
         "file_id": str(uuid.uuid4()),

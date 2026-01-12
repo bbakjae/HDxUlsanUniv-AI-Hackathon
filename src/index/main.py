@@ -21,13 +21,16 @@ def full_indexing(root_path: str):
         print(f"Indexing: {path}")
         file_doc = save_file_metadata(path)
 
+        #file_type: 파일확장자
         text = extract_text(path, file_doc["file_type"])
         if not text.strip():
             continue
 
+        #파일 청크단위로 분리 (리스트)
         chunks = chunk_text(text)
         index_chunks(file_doc, chunks)
     save_index()
 
 if __name__ == "__main__":
+    #파일 스캔 후 임베딩,벡터DB 저장 몽고DB 인덱싱 저장
     full_indexing("C:/aaa")
