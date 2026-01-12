@@ -1,4 +1,4 @@
-from index.config import CHUNK_SIZE, CHUNK_OVERLAP
+from src.index.config import CHUNK_SIZE, CHUNK_OVERLAP
 
 # 텍스트를 청크사이즈 만큼 짤라서 리스트로 저장
 def chunk_text(text: str):

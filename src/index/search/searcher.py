@@ -1,8 +1,8 @@
 import numpy as np
-from index.embedding.embedder import model
-from index.vector.faiss_index import load_index
-from index.db.mongo import chunks_col, files_col
-from index.vector.faiss_index import search_vectors
+from src.index.embedding.embedder import model
+from src.index.vector.faiss_index import load_index
+from src.index.db.mongo import chunks_col, files_col
+from src.index.vector.faiss_index import search_vectors
 # FAISS index 로드 (1회)
 index = load_index()
 

@@ -1,4 +1,4 @@
-from index.search.searcher import search
+from src.index.search.searcher import search
 if __name__ == "__main__":
     query = "선박의 연료 소비 최소화 관련 내용"
 

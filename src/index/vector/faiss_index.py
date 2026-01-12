@@ -1,6 +1,6 @@
 import faiss
 import numpy as np
-from index.config import EMBED_DIM
+from src.index.config import EMBED_DIM
 from pathlib import Path
 
 #faiss 파일 경로 설정

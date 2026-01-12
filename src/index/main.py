@@ -4,7 +4,7 @@ from indexing.extractor import extract_text
 from indexing.chunker import chunk_text
 from indexing.indexer import index_chunks
 from db.mongo import files_col, chunks_col
-from index.vector.faiss_index import (
+from src.index.vector.faiss_index import (
     reset_index,
     delete_index_file,
     save_index,
@@ -35,4 +35,4 @@ def full_indexing(root_path: str):
 
 if __name__ == "__main__":
     #파일 스캔 후 임베딩,벡터DB 저장 몽고DB 인덱싱 저장
-    full_indexing("C:/aaa")
+    full_indexing("/Users/pjr/Desktop/aaa")

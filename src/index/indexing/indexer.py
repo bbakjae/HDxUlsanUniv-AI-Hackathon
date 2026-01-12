@@ -1,8 +1,8 @@
 import uuid
 import numpy as np
-from index.db.mongo import chunks_col
-from index.embedding.embedder import model
-from index.vector.faiss_index import add_vectors, index
+from src.index.db.mongo import chunks_col
+from src.index.embedding.embedder import model
+from src.index.vector.faiss_index import add_vectors, index
 
 #벡터 DB에 저장 및 mongoDB에 chunk 컬렉션(테이블) 저장
 def index_chunks(file_doc, chunks):
