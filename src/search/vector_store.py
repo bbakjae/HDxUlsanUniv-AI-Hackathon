@@ -1,9 +1,10 @@
 """
 Qdrant 벡터 데이터베이스 관리
+Multi-Vector 지원 (Dense + Sparse)
 """
 
 import logging
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Tuple
 from pathlib import Path
 import numpy as np
 import hashlib
@@ -17,7 +18,14 @@ from qdrant_client.models import (
     FieldCondition,
     MatchValue,
     SearchRequest,
-    ScoredPoint
+    ScoredPoint,
+    SparseVectorParams,
+    SparseVector,
+    NamedSparseVector,
+    Prefetch,
+    FusionQuery,
+    Fusion,
+    Query
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +33,10 @@ logger = logging.getLogger(__name__)
 
 
 class QdrantVectorStore:
-    """Qdrant 벡터 데이터베이스 관리 클래스"""
+    """
+    Qdrant 벡터 데이터베이스 관리 클래스
+    Multi-Vector 지원 (Dense + Sparse Named Vectors)
+    """
 
     def __init__(
         self,
@@ -33,7 +44,8 @@ class QdrantVectorStore:
         collection_name: str = "company_files",
         vector_size: int = 1024,
         distance: str = "Cosine",
-        recreate_collection: bool = False
+        recreate_collection: bool = False,
+        use_sparse: bool = True
     ):
         """
         Args:
@@ -42,6 +54,7 @@ class QdrantVectorStore:
             vector_size: 벡터 차원
             distance: 거리 메트릭 (Cosine, Euclidean, Dot)
             recreate_collection: 컬렉션 재생성 여부
+            use_sparse: Sparse 벡터 사용 여부 (Multi-Vector)
         """
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -49,6 +62,7 @@ class QdrantVectorStore:
         self.collection_name = collection_name
         self.vector_size = vector_size
         self.distance = self._parse_distance(distance)
+        self.use_sparse = use_sparse
 
         # Qdrant 클라이언트 초기화
         logger.info(f"Initializing Qdrant client at {self.storage_path}")
@@ -67,7 +81,7 @@ class QdrantVectorStore:
         return distance_map.get(distance, Distance.COSINE)
 
     def _setup_collection(self, recreate: bool = False):
-        """컬렉션 설정"""
+        """컬렉션 설정 (Multi-Vector 지원)"""
         collections = self.client.get_collections().collections
         collection_exists = any(c.name == self.collection_name for c in collections)
 
@@ -77,20 +91,38 @@ class QdrantVectorStore:
             collection_exists = False
 
         if not collection_exists:
-            logger.info(f"Creating collection: {self.collection_name}")
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(
-                    size=self.vector_size,
-                    distance=self.distance
+            logger.info(f"Creating collection: {self.collection_name} (use_sparse={self.use_sparse})")
+
+            if self.use_sparse:
+                # Multi-Vector: Dense + Sparse Named Vectors
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config={
+                        "dense": VectorParams(
+                            size=self.vector_size,
+                            distance=self.distance
+                        )
+                    },
+                    sparse_vectors_config={
+                        "sparse": SparseVectorParams()
+                    }
                 )
-            )
+                logger.info("Created Multi-Vector collection with Dense + Sparse vectors")
+            else:
+                # 기존 방식: 단일 Dense 벡터
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(
+                        size=self.vector_size,
+                        distance=self.distance
+                    )
+                )
+                logger.info("Created single Dense vector collection")
         else:
             logger.info(f"Using existing collection: {self.collection_name}")
 
     def _string_to_int_id(self, string_id: str) -> int:
         """문자열 ID를 정수 ID로 변환 (Qdrant 호환)"""
-        # MD5 해시의 처음 16자리를 정수로 변환
         hash_hex = hashlib.md5(string_id.encode()).hexdigest()[:16]
         return int(hash_hex, 16)
 
@@ -98,32 +130,68 @@ class QdrantVectorStore:
         self,
         ids: List[str],
         vectors: np.ndarray,
-        payloads: List[Dict]
+        payloads: List[Dict],
+        sparse_vectors: Optional[List[Dict[int, float]]] = None
     ) -> bool:
         """
-        문서를 벡터 DB에 추가
+        문서를 벡터 DB에 추가 (Multi-Vector 지원)
 
         Args:
             ids: 문서 ID 리스트
-            vectors: 임베딩 벡터 (n, dim)
+            vectors: Dense 임베딩 벡터 (n, dim)
             payloads: 메타데이터 리스트
+            sparse_vectors: Sparse 벡터 리스트 [{token_id: weight}, ...]
 
         Returns:
             성공 여부
         """
         try:
             points = []
-            for id_, vector, payload in zip(ids, vectors, payloads):
-                # 문자열 ID를 정수로 변환
+            for i, (id_, vector, payload) in enumerate(zip(ids, vectors, payloads)):
                 int_id = self._string_to_int_id(id_)
-                # 원본 문자열 ID를 payload에 저장
                 payload['original_id'] = id_
 
-                point = PointStruct(
-                    id=int_id,
-                    vector=vector.tolist() if isinstance(vector, np.ndarray) else vector,
-                    payload=payload
-                )
+                # Dense 벡터 변환
+                dense_vec = vector.tolist() if isinstance(vector, np.ndarray) else vector
+
+                if self.use_sparse and sparse_vectors and i < len(sparse_vectors):
+                    # Multi-Vector: Named Vectors 사용
+                    sparse_dict = sparse_vectors[i]
+                    if sparse_dict:
+                        indices = list(sparse_dict.keys())
+                        values = list(sparse_dict.values())
+                        sparse_vec = SparseVector(indices=indices, values=values)
+
+                        point = PointStruct(
+                            id=int_id,
+                            vector={
+                                "dense": dense_vec,
+                                "sparse": sparse_vec
+                            },
+                            payload=payload
+                        )
+                    else:
+                        # Sparse가 비어있으면 Dense만
+                        point = PointStruct(
+                            id=int_id,
+                            vector={"dense": dense_vec},
+                            payload=payload
+                        )
+                else:
+                    # 기존 방식: 단일 벡터
+                    if self.use_sparse:
+                        point = PointStruct(
+                            id=int_id,
+                            vector={"dense": dense_vec},
+                            payload=payload
+                        )
+                    else:
+                        point = PointStruct(
+                            id=int_id,
+                            vector=dense_vec,
+                            payload=payload
+                        )
+
                 points.append(point)
 
             self.client.upsert(
@@ -136,26 +204,25 @@ class QdrantVectorStore:
 
         except Exception as e:
             logger.error(f"Error adding documents: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def add_document(
         self,
         doc_id: str,
         vector: Union[np.ndarray, List[float]],
-        payload: Dict
+        payload: Dict,
+        sparse_vector: Optional[Dict[int, float]] = None
     ) -> bool:
-        """
-        단일 문서 추가
-
-        Args:
-            doc_id: 문서 ID
-            vector: 임베딩 벡터
-            payload: 메타데이터
-
-        Returns:
-            성공 여부
-        """
-        return self.add_documents([doc_id], [vector], [payload])
+        """단일 문서 추가"""
+        sparse_vectors = [sparse_vector] if sparse_vector else None
+        return self.add_documents(
+            [doc_id],
+            np.array([vector]) if isinstance(vector, list) else vector.reshape(1, -1),
+            [payload],
+            sparse_vectors
+        )
 
     def search(
         self,
@@ -163,33 +230,32 @@ class QdrantVectorStore:
         top_k: int = 10,
         filter_conditions: Optional[Dict] = None,
         score_threshold: Optional[float] = None,
-        with_vectors: bool = False
+        with_vectors: bool = False,
+        sparse_vector: Optional[Dict[int, float]] = None,
+        use_hybrid: bool = True,
+        dense_weight: float = 0.6,
+        sparse_weight: float = 0.4
     ) -> List[Dict]:
         """
-        벡터 유사도 검색
+        벡터 유사도 검색 (Multi-Vector 하이브리드 검색 지원)
 
         Args:
-            query_vector: 쿼리 벡터
+            query_vector: Dense 쿼리 벡터
             top_k: 반환할 결과 수
             filter_conditions: 필터 조건
             score_threshold: 점수 임계값
             with_vectors: 결과에 벡터 포함 여부
+            sparse_vector: Sparse 쿼리 벡터 (Multi-Vector)
+            use_hybrid: Dense + Sparse 하이브리드 검색 사용
+            dense_weight: Dense 검색 가중치
+            sparse_weight: Sparse 검색 가중치
 
         Returns:
             검색 결과 리스트
-            [
-                {
-                    'id': str,
-                    'score': float,
-                    'payload': dict,
-                    'vector': list (optional)
-                }
-            ]
         """
         try:
-            # 벡터를 1차원 리스트로 변환
+            # Dense 벡터 변환
             if isinstance(query_vector, np.ndarray):
-                # 다차원 배열인 경우 평탄화
                 if len(query_vector.shape) > 1:
                     query_vector = query_vector.flatten()
                 query_vector = query_vector.tolist()
@@ -199,65 +265,188 @@ class QdrantVectorStore:
             if filter_conditions:
                 query_filter = self._build_filter(filter_conditions)
 
-            # 검색 수행 (Qdrant client 1.16+ API)
+            # Multi-Vector 하이브리드 검색
+            if self.use_sparse and sparse_vector and use_hybrid:
+                return self._hybrid_search(
+                    dense_vector=query_vector,
+                    sparse_vector=sparse_vector,
+                    top_k=top_k,
+                    query_filter=query_filter,
+                    with_vectors=with_vectors,
+                    dense_weight=dense_weight,
+                    sparse_weight=sparse_weight
+                )
+
+            # 단일 Dense 검색
+            if self.use_sparse:
+                # Named Vector 사용
+                search_result = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_vector,
+                    using="dense",
+                    limit=top_k,
+                    query_filter=query_filter,
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                    with_vectors=with_vectors
+                ).points
+            else:
+                # 기존 방식
+                search_result = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_vector,
+                    limit=top_k,
+                    query_filter=query_filter,
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                    with_vectors=with_vectors
+                ).points
+
+            return self._format_results(search_result, with_vectors)
+
+        except Exception as e:
+            logger.error(f"Error searching: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    def _hybrid_search(
+        self,
+        dense_vector: List[float],
+        sparse_vector: Dict[int, float],
+        top_k: int = 10,
+        query_filter: Optional[Filter] = None,
+        with_vectors: bool = False,
+        dense_weight: float = 0.6,
+        sparse_weight: float = 0.4
+    ) -> List[Dict]:
+        """
+        Qdrant 내장 하이브리드 검색 (RRF Fusion)
+
+        Args:
+            dense_vector: Dense 쿼리 벡터
+            sparse_vector: Sparse 쿼리 벡터
+            top_k: 반환할 결과 수
+            query_filter: 필터 조건
+            with_vectors: 벡터 포함 여부
+            dense_weight: Dense 가중치
+            sparse_weight: Sparse 가중치
+
+        Returns:
+            검색 결과 리스트
+        """
+        try:
+            # Sparse 벡터 변환
+            sparse_indices = list(sparse_vector.keys())
+            sparse_values = list(sparse_vector.values())
+
+            # Prefetch로 각 벡터 타입별 검색 후 RRF Fusion
             search_result = self.client.query_points(
                 collection_name=self.collection_name,
-                query=query_vector,
-                limit=top_k,
+                prefetch=[
+                    Prefetch(
+                        query=dense_vector,
+                        using="dense",
+                        limit=top_k * 2
+                    ),
+                    Prefetch(
+                        query=SparseVector(
+                            indices=sparse_indices,
+                            values=sparse_values
+                        ),
+                        using="sparse",
+                        limit=top_k * 2
+                    )
+                ],
+                query=FusionQuery(fusion=Fusion.RRF),
                 query_filter=query_filter,
-                score_threshold=score_threshold,
+                limit=top_k,
                 with_payload=True,
                 with_vectors=with_vectors
             ).points
 
-            # 결과 포맷팅
-            results = []
-            for hit in search_result:
-                # 원본 문자열 ID 복원 (payload에 저장된 경우)
-                original_id = hit.payload.get('original_id', str(hit.id))
-                result = {
-                    'id': original_id,
-                    'score': hit.score,
-                    'payload': hit.payload
-                }
-                # 벡터 포함 옵션
-                if with_vectors and hasattr(hit, 'vector') and hit.vector is not None:
-                    result['vector'] = hit.vector
-                results.append(result)
-
-            return results
+            return self._format_results(search_result, with_vectors)
 
         except Exception as e:
-            logger.error(f"Error searching: {e}")
+            logger.warning(f"Hybrid search failed, falling back to dense: {e}")
+            # Fallback to dense-only search
+            search_result = self.client.query_points(
+                collection_name=self.collection_name,
+                query=dense_vector,
+                using="dense",
+                limit=top_k,
+                query_filter=query_filter,
+                with_payload=True,
+                with_vectors=with_vectors
+            ).points
+            return self._format_results(search_result, with_vectors)
+
+    def search_sparse_only(
+        self,
+        sparse_vector: Dict[int, float],
+        top_k: int = 10,
+        filter_conditions: Optional[Dict] = None
+    ) -> List[Dict]:
+        """Sparse 벡터만으로 검색 (키워드 검색)"""
+        if not self.use_sparse:
+            logger.warning("Sparse search not available (use_sparse=False)")
             return []
+
+        try:
+            query_filter = None
+            if filter_conditions:
+                query_filter = self._build_filter(filter_conditions)
+
+            sparse_indices = list(sparse_vector.keys())
+            sparse_values = list(sparse_vector.values())
+
+            search_result = self.client.query_points(
+                collection_name=self.collection_name,
+                query=SparseVector(indices=sparse_indices, values=sparse_values),
+                using="sparse",
+                limit=top_k,
+                query_filter=query_filter,
+                with_payload=True
+            ).points
+
+            return self._format_results(search_result)
+
+        except Exception as e:
+            logger.error(f"Error in sparse search: {e}")
+            return []
+
+    def _format_results(self, search_result, with_vectors: bool = False) -> List[Dict]:
+        """검색 결과 포맷팅"""
+        results = []
+        for hit in search_result:
+            original_id = hit.payload.get('original_id', str(hit.id))
+            result = {
+                'id': original_id,
+                'score': hit.score,
+                'payload': hit.payload
+            }
+            if with_vectors and hasattr(hit, 'vector') and hit.vector is not None:
+                result['vector'] = hit.vector
+            results.append(result)
+        return results
 
     def batch_search(
         self,
         query_vectors: List[Union[np.ndarray, List[float]]],
-        top_k: int = 10
+        top_k: int = 10,
+        sparse_vectors: Optional[List[Dict[int, float]]] = None
     ) -> List[List[Dict]]:
-        """
-        배치 검색
-
-        Args:
-            query_vectors: 쿼리 벡터 리스트
-            top_k: 각 쿼리당 반환할 결과 수
-
-        Returns:
-            각 쿼리별 검색 결과 리스트
-        """
+        """배치 검색"""
         all_results = []
-
-        for query_vector in query_vectors:
-            results = self.search(query_vector, top_k=top_k)
+        for i, query_vector in enumerate(query_vectors):
+            sparse_vec = sparse_vectors[i] if sparse_vectors and i < len(sparse_vectors) else None
+            results = self.search(query_vector, top_k=top_k, sparse_vector=sparse_vec)
             all_results.append(results)
-
         return all_results
 
     def _build_filter(self, conditions: Dict) -> Filter:
         """필터 조건 생성"""
         field_conditions = []
-
         for key, value in conditions.items():
             field_conditions.append(
                 FieldCondition(
@@ -265,55 +454,37 @@ class QdrantVectorStore:
                     match=MatchValue(value=value)
                 )
             )
-
         return Filter(must=field_conditions)
 
     def delete_documents(self, ids: List[str]) -> bool:
-        """
-        문서 삭제
-
-        Args:
-            ids: 삭제할 문서 ID 리스트
-
-        Returns:
-            성공 여부
-        """
+        """문서 삭제"""
         try:
+            int_ids = [self._string_to_int_id(id_) for id_ in ids]
             self.client.delete(
                 collection_name=self.collection_name,
-                points_selector=ids
+                points_selector=int_ids
             )
             logger.info(f"Deleted {len(ids)} documents")
             return True
-
         except Exception as e:
             logger.error(f"Error deleting documents: {e}")
             return False
 
     def get_document(self, doc_id: str) -> Optional[Dict]:
-        """
-        문서 조회
-
-        Args:
-            doc_id: 문서 ID
-
-        Returns:
-            문서 정보 또는 None
-        """
+        """문서 조회"""
         try:
+            int_id = self._string_to_int_id(doc_id)
             result = self.client.retrieve(
                 collection_name=self.collection_name,
-                ids=[doc_id]
+                ids=[int_id]
             )
-
             if result:
                 return {
-                    'id': result[0].id,
+                    'id': result[0].payload.get('original_id', str(result[0].id)),
                     'vector': result[0].vector,
                     'payload': result[0].payload
                 }
             return None
-
         except Exception as e:
             logger.error(f"Error retrieving document: {e}")
             return None
@@ -328,7 +499,7 @@ class QdrantVectorStore:
             return 0
 
     def clear_collection(self) -> bool:
-        """컬렉션 내 모든 문서 삭제"""
+        """컬렉션 내 모든 문서 삭제 및 재생성"""
         try:
             self.client.delete_collection(self.collection_name)
             self._setup_collection(recreate=False)
@@ -338,56 +509,78 @@ class QdrantVectorStore:
             logger.error(f"Error clearing collection: {e}")
             return False
 
+    def get_collection_info(self) -> Dict:
+        """컬렉션 정보 조회"""
+        try:
+            info = self.client.get_collection(self.collection_name)
+            return {
+                'name': self.collection_name,
+                'points_count': info.points_count,
+                'vectors_count': info.vectors_count,
+                'status': str(info.status),
+                'use_sparse': self.use_sparse
+            }
+        except Exception as e:
+            logger.error(f"Error getting collection info: {e}")
+            return {}
 
-def test_vector_store():
-    """벡터 스토어 테스트"""
-    logger.info("Testing QdrantVectorStore")
 
-    # 테스트 스토어 생성
+def test_multi_vector_store():
+    """Multi-Vector 스토어 테스트"""
+    logger.info("Testing Multi-Vector QdrantVectorStore")
+
+    # Multi-Vector 스토어 생성
     store = QdrantVectorStore(
-        storage_path="/tmp/test_qdrant",
-        collection_name="test_collection",
+        storage_path="/tmp/test_multi_vector_qdrant",
+        collection_name="test_multi_vector",
         vector_size=1024,
-        recreate_collection=True
+        recreate_collection=True,
+        use_sparse=True
     )
 
     # 테스트 데이터
     test_ids = ["doc1", "doc2", "doc3"]
-    test_vectors = np.random.rand(3, 1024).astype(np.float32)
+    test_dense = np.random.rand(3, 1024).astype(np.float32)
+    test_sparse = [
+        {100: 0.8, 200: 0.6, 300: 0.4},  # 토큰 ID: 가중치
+        {150: 0.9, 250: 0.5},
+        {100: 0.7, 350: 0.8, 400: 0.3}
+    ]
     test_payloads = [
-        {"text": "문서 1", "type": "pdf"},
-        {"text": "문서 2", "type": "docx"},
-        {"text": "문서 3", "type": "pptx"}
+        {"text": "2024년 매출 보고서", "type": "pdf"},
+        {"text": "마케팅 전략 계획", "type": "docx"},
+        {"text": "AI 프로젝트 제안서", "type": "pptx"}
     ]
 
     # 문서 추가
-    logger.info("\n1. Adding documents")
-    success = store.add_documents(test_ids, test_vectors, test_payloads)
+    logger.info("\n1. Adding documents with Multi-Vector")
+    success = store.add_documents(test_ids, test_dense, test_payloads, test_sparse)
     logger.info(f"Add success: {success}")
     logger.info(f"Document count: {store.count_documents()}")
+    logger.info(f"Collection info: {store.get_collection_info()}")
 
-    # 검색
-    logger.info("\n2. Searching")
-    query_vector = np.random.rand(1024).astype(np.float32)
-    results = store.search(query_vector, top_k=2)
-
+    # Dense 검색
+    logger.info("\n2. Dense-only search")
+    query_dense = np.random.rand(1024).astype(np.float32)
+    results = store.search(query_dense, top_k=2, use_hybrid=False)
     for i, result in enumerate(results):
-        logger.info(f"Result {i+1}:")
-        logger.info(f"  ID: {result['id']}")
-        logger.info(f"  Score: {result['score']:.4f}")
-        logger.info(f"  Payload: {result['payload']}")
+        logger.info(f"Result {i+1}: {result['payload']['text']} (score: {result['score']:.4f})")
 
-    # 문서 조회
-    logger.info("\n3. Retrieving document")
-    doc = store.get_document("doc1")
-    if doc:
-        logger.info(f"Retrieved doc: {doc['payload']}")
+    # 하이브리드 검색
+    logger.info("\n3. Hybrid search (Dense + Sparse)")
+    query_sparse = {100: 0.9, 200: 0.7}
+    results = store.search(query_dense, top_k=2, sparse_vector=query_sparse, use_hybrid=True)
+    for i, result in enumerate(results):
+        logger.info(f"Result {i+1}: {result['payload']['text']} (score: {result['score']:.4f})")
 
-    # 삭제
-    logger.info("\n4. Deleting documents")
-    store.delete_documents(["doc1"])
-    logger.info(f"Document count after delete: {store.count_documents()}")
+    # Sparse 검색
+    logger.info("\n4. Sparse-only search")
+    results = store.search_sparse_only(query_sparse, top_k=2)
+    for i, result in enumerate(results):
+        logger.info(f"Result {i+1}: {result['payload']['text']} (score: {result['score']:.4f})")
+
+    logger.info("\nMulti-Vector test completed!")
 
 
 if __name__ == "__main__":
-    test_vector_store()
+    test_multi_vector_store()

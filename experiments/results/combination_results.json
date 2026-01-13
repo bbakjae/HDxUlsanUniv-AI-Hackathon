@@ -1,0 +1,32 @@
+[
+  {
+    "combination_name": "BGE-m3-ko + Qwen2.5-7B-Instruct",
+    "embedding_name": "BGE-m3-ko",
+    "llm_name": "Qwen2.5-7B-Instruct",
+    "total_time_sec": 5.213078927993775,
+    "search_time_sec": 0.6798824787139892,
+    "summary_time_sec": 4.533196449279785,
+    "mrr": 1.0,
+    "recall_at_5": 1.0,
+    "rouge_l": 0.6649650104293471,
+    "total_gpu_memory_gb": 14.257434844970703,
+    "weighted_score": 0.9162412526073368,
+    "total_queries": 10,
+    "eval_timestamp": "2026-01-10T06:37:00.355305"
+  },
+  {
+    "combination_name": "BAAI/bge-m3 + Qwen2.5-7B-Instruct",
+    "embedding_name": "BAAI/bge-m3",
+    "llm_name": "Qwen2.5-7B-Instruct",
+    "total_time_sec": 6.099534916877746,
+    "search_time_sec": 0.394834566116333,
+    "summary_time_sec": 5.704700350761414,
+    "mrr": 1.0,
+    "recall_at_5": 1.0,
+    "rouge_l": 0.6530799957758515,
+    "total_gpu_memory_gb": 14.264881134033203,
+    "weighted_score": 0.46329047892724107,
+    "total_queries": 10,
+    "eval_timestamp": "2026-01-10T06:38:21.435862"
+  }
+]
