@@ -1,0 +1,8 @@
+[theme]
+# [크리스탈 블루]
+
+primaryColor = "#2563EB"          # 선명한 로얄 블루 (Royal Blue)
+backgroundColor = "#FFFFFF"       # 완전한 화이트
+secondaryBackgroundColor = "#FAFAFA" # 거의 흰색에 가까운 아주 밝은 그레이
+textColor = "#1F2937"             # 완전 검정보다 세련된 차콜
+font = "sans serif"
