@@ -29,19 +29,23 @@ logger = logging.getLogger(__name__)
 
 
 class FileIndexer:
-    """파일 인덱서"""
+    """파일 인덱서 (Multi-Vector 지원)"""
 
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, use_sparse: bool = True):
         """
         Args:
             config_path: 설정 파일 경로
+            use_sparse: Sparse 벡터 사용 여부 (Multi-Vector)
         """
         # 설정 로드
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
 
+        self.use_sparse = use_sparse
+
         # 컴포넌트 초기화
         logger.info("Initializing components...")
+        logger.info(f"Multi-Vector mode: {use_sparse}")
 
         self.parser = MultimodalParser(
             chunk_size=self.config['parsing']['chunk_size'],
@@ -60,7 +64,8 @@ class FileIndexer:
             storage_path=self.config['data']['qdrant_storage'],
             collection_name=self.config['qdrant']['collection_name'],
             vector_size=self.config['qdrant']['vector_size'],
-            distance=self.config['qdrant']['distance']
+            distance=self.config['qdrant']['distance'],
+            use_sparse=use_sparse  # Multi-Vector 설정
         )
 
         self.bm25_engine = BM25SearchEngine(use_korean_tokenizer=True)
@@ -181,15 +186,25 @@ class FileIndexer:
             if not batch_texts:
                 continue
 
-            # 2. 임베딩 생성
+            # 2. 임베딩 생성 (Dense + Sparse for Multi-Vector)
             try:
-                embeddings_result = self.embedder.encode_documents(
-                    batch_texts,
-                    batch_size=self.config['embedding']['batch_size'],
-                    include_sparse=False
-                )
-
-                batch_embeddings = embeddings_result['dense_vecs']
+                if self.use_sparse:
+                    # Multi-Vector: Dense + Sparse 동시 생성
+                    embeddings_result = self.embedder.encode_for_indexing(
+                        batch_texts,
+                        batch_size=self.config['embedding']['batch_size']
+                    )
+                    batch_embeddings = embeddings_result['dense_vecs']
+                    batch_sparse = embeddings_result['sparse_vecs']
+                else:
+                    # 기존 방식: Dense만
+                    embeddings_result = self.embedder.encode_documents(
+                        batch_texts,
+                        batch_size=self.config['embedding']['batch_size'],
+                        include_sparse=False
+                    )
+                    batch_embeddings = embeddings_result['dense_vecs']
+                    batch_sparse = None
 
                 # 3. 벡터 DB에 저장 (청크 정보 포함)
                 payloads = [
@@ -209,7 +224,8 @@ class FileIndexer:
                 self.vector_store.add_documents(
                     ids=batch_ids,
                     vectors=batch_embeddings,
-                    payloads=payloads
+                    payloads=payloads,
+                    sparse_vectors=batch_sparse  # Multi-Vector: Sparse 벡터 추가
                 )
 
                 # BM25용 데이터 수집
@@ -267,14 +283,20 @@ def main():
         action='store_true',
         help='Recreate vector database'
     )
+    parser.add_argument(
+        '--no-sparse',
+        action='store_true',
+        help='Disable Sparse vectors (use Dense only)'
+    )
 
     args = parser.parse_args()
 
     # 설정 파일 경로
     config_path = Path(project_root) / args.config
 
-    # 인덱서 초기화
-    indexer = FileIndexer(str(config_path))
+    # 인덱서 초기화 (Multi-Vector 기본 활성화)
+    use_sparse = not args.no_sparse if hasattr(args, 'no_sparse') else True
+    indexer = FileIndexer(str(config_path), use_sparse=use_sparse)
 
     # 컬렉션 재생성
     if args.recreate:

@@ -189,8 +189,8 @@ class BGEM3Embedder(EmbeddingModel):
 
         Returns:
             {
-                'dense': np.ndarray,
-                'sparse': List[Dict] (optional)
+                'dense_vecs': np.ndarray,
+                'lexical_weights': List[Dict] (optional) - Sparse 벡터
             }
         """
         return self.encode(
@@ -200,6 +200,85 @@ class BGEM3Embedder(EmbeddingModel):
             return_colbert_vecs=False,
             batch_size=batch_size
         )
+
+    def encode_for_indexing(
+        self,
+        texts: List[str],
+        batch_size: int = 32
+    ) -> Dict[str, Union[np.ndarray, List[Dict[int, float]]]]:
+        """
+        인덱싱을 위한 Dense + Sparse 벡터 동시 생성
+
+        Args:
+            texts: 텍스트 리스트
+            batch_size: 배치 크기
+
+        Returns:
+            {
+                'dense_vecs': np.ndarray (n, 1024),
+                'sparse_vecs': List[Dict[int, float]] - Qdrant 호환 형식
+            }
+        """
+        result = self.encode(
+            texts,
+            return_dense=True,
+            return_sparse=True,
+            return_colbert_vecs=False,
+            batch_size=batch_size
+        )
+
+        # Sparse 벡터를 Qdrant 호환 형식으로 변환
+        sparse_vecs = []
+        if 'lexical_weights' in result:
+            for sparse_dict in result['lexical_weights']:
+                if sparse_dict:
+                    # token_id를 정수로 변환
+                    converted = {int(k): float(v) for k, v in sparse_dict.items()}
+                    sparse_vecs.append(converted)
+                else:
+                    sparse_vecs.append({})
+        else:
+            sparse_vecs = [{}] * len(texts)
+
+        return {
+            'dense_vecs': result['dense_vecs'],
+            'sparse_vecs': sparse_vecs
+        }
+
+    def encode_query_for_search(
+        self,
+        query: str
+    ) -> Dict[str, Union[np.ndarray, Dict[int, float]]]:
+        """
+        검색을 위한 쿼리 Dense + Sparse 벡터 생성
+
+        Args:
+            query: 검색 쿼리
+
+        Returns:
+            {
+                'dense_vec': np.ndarray (1024,),
+                'sparse_vec': Dict[int, float] - Qdrant 호환 형식
+            }
+        """
+        result = self.encode(
+            [query],
+            return_dense=True,
+            return_sparse=True,
+            return_colbert_vecs=False
+        )
+
+        # Sparse 벡터 변환
+        sparse_vec = {}
+        if 'lexical_weights' in result and result['lexical_weights']:
+            sparse_dict = result['lexical_weights'][0]
+            if sparse_dict:
+                sparse_vec = {int(k): float(v) for k, v in sparse_dict.items()}
+
+        return {
+            'dense_vec': result['dense_vecs'][0],
+            'sparse_vec': sparse_vec
+        }
 
     def compute_similarity(
         self,

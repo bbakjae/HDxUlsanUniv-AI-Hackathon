@@ -1,14 +1,31 @@
 """
-하이브리드 검색 엔진 - BM25 + 벡터 검색 결합
+하이브리드 검색 엔진 - Multi-Vector + BM25 결합
 Reciprocal Rank Fusion (RRF) 알고리즘 사용
+
+Multi-Vector 모드:
+- Qdrant 내장 RRF Fusion (Dense + Sparse)
+- BM25는 fallback으로 사용
+
+Legacy 모드:
+- BM25 + Dense Vector RRF Fusion
 """
 
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union, TYPE_CHECKING
 import numpy as np
 
 from .vector_store import QdrantVectorStore
-from .bm25_search import BM25SearchEngine
+
+# BM25 모듈 조건부 import (Multi-Vector 모드에서는 선택적)
+try:
+    from .bm25_search import BM25SearchEngine
+    BM25_AVAILABLE = True
+except ImportError:
+    BM25SearchEngine = None
+    BM25_AVAILABLE = False
+
+if TYPE_CHECKING:
+    from .bm25_search import BM25SearchEngine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,37 +34,47 @@ logger = logging.getLogger(__name__)
 class HybridSearchEngine:
     """
     하이브리드 검색 엔진
-    - BM25 키워드 검색
-    - 벡터 의미 검색
-    - Reciprocal Rank Fusion으로 결과 통합
+    - Multi-Vector: Qdrant 내장 Dense + Sparse RRF Fusion
+    - Legacy: BM25 + Dense Vector RRF Fusion
     """
 
     def __init__(
         self,
         vector_store: QdrantVectorStore,
-        bm25_engine: BM25SearchEngine,
+        embedder=None,
+        bm25_engine: Optional['BM25SearchEngine'] = None,
         bm25_weight: float = 0.4,
         vector_weight: float = 0.6,
-        rrf_k: int = 60
+        rrf_k: int = 60,
+        use_multi_vector: bool = True
     ):
         """
         Args:
             vector_store: Qdrant 벡터 스토어
-            bm25_engine: BM25 검색 엔진
-            bm25_weight: BM25 검색 가중치
-            vector_weight: 벡터 검색 가중치
+            embedder: 임베딩 모델 (Multi-Vector 모드에서 쿼리 임베딩 생성용)
+            bm25_engine: BM25 검색 엔진 (Legacy 모드용)
+            bm25_weight: BM25/Sparse 검색 가중치
+            vector_weight: Dense 벡터 검색 가중치
             rrf_k: RRF 파라미터
+            use_multi_vector: Multi-Vector 모드 사용 (Qdrant 내장 RRF)
         """
         self.vector_store = vector_store
+        self.embedder = embedder
         self.bm25_engine = bm25_engine
         self.bm25_weight = bm25_weight
         self.vector_weight = vector_weight
         self.rrf_k = rrf_k
+        self.use_multi_vector = use_multi_vector and vector_store.use_sparse
 
         # 가중치 정규화
         total_weight = bm25_weight + vector_weight
         self.bm25_weight /= total_weight
         self.vector_weight /= total_weight
+
+        if self.use_multi_vector:
+            logger.info("HybridSearchEngine initialized with Multi-Vector mode (Qdrant RRF)")
+        else:
+            logger.info("HybridSearchEngine initialized with Legacy mode (BM25 + Dense RRF)")
 
     def search(
         self,
@@ -56,32 +83,118 @@ class HybridSearchEngine:
         top_k: int = 20,
         final_top_k: Optional[int] = None,
         use_rrf: bool = True,
-        include_explanation: bool = True
+        include_explanation: bool = True,
+        sparse_vector: Optional[Dict[int, float]] = None
     ) -> List[Dict]:
         """
         하이브리드 검색 수행
 
         Args:
             query: 검색 쿼리 텍스트
-            query_embedding: 쿼리 임베딩 벡터
+            query_embedding: Dense 쿼리 임베딩 벡터
             top_k: 각 검색 방법에서 가져올 결과 수
             final_top_k: 최종 반환할 결과 수 (None이면 top_k 사용)
             use_rrf: RRF 사용 여부 (False면 가중 평균 사용)
             include_explanation: 검색 결과 설명 포함 여부
+            sparse_vector: Sparse 쿼리 벡터 (Multi-Vector 모드용)
 
         Returns:
             검색 결과 리스트
         """
         final_top_k = final_top_k or top_k
 
+        # Multi-Vector 모드: Qdrant 내장 RRF 사용
+        if self.use_multi_vector and sparse_vector:
+            return self._search_multi_vector(
+                query=query,
+                query_embedding=query_embedding,
+                sparse_vector=sparse_vector,
+                top_k=top_k,
+                final_top_k=final_top_k,
+                include_explanation=include_explanation
+            )
+
+        # Legacy 모드: BM25 + Dense Vector RRF
+        return self._search_legacy(
+            query=query,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            final_top_k=final_top_k,
+            use_rrf=use_rrf,
+            include_explanation=include_explanation
+        )
+
+    def _search_multi_vector(
+        self,
+        query: str,
+        query_embedding: np.ndarray,
+        sparse_vector: Dict[int, float],
+        top_k: int,
+        final_top_k: int,
+        include_explanation: bool
+    ) -> List[Dict]:
+        """
+        Multi-Vector 검색 (Qdrant 내장 RRF)
+        """
+        logger.debug(f"Multi-Vector search with query: {query}")
+
+        # Qdrant 하이브리드 검색 (Dense + Sparse RRF)
+        results = self.vector_store.search(
+            query_vector=query_embedding,
+            sparse_vector=sparse_vector,
+            top_k=final_top_k,
+            use_hybrid=True,
+            dense_weight=self.vector_weight,
+            sparse_weight=self.bm25_weight
+        )
+
+        # 결과 포맷팅
+        formatted_results = []
+        for result in results:
+            payload = result.get('payload', {})
+
+            formatted = {
+                'id': result['id'],
+                'score': result['score'],
+                'text': payload.get('text', ''),
+                'metadata': payload,
+                'payload': payload
+            }
+
+            if include_explanation:
+                formatted['explanation'] = {
+                    'search_type': ['multi_vector'],
+                    'dense_score': result['score'],  # RRF 통합 점수
+                    'sparse_score': result['score'],
+                    'fusion_method': 'qdrant_rrf'
+                }
+
+            formatted_results.append(formatted)
+
+        return formatted_results
+
+    def _search_legacy(
+        self,
+        query: str,
+        query_embedding: np.ndarray,
+        top_k: int,
+        final_top_k: int,
+        use_rrf: bool,
+        include_explanation: bool
+    ) -> List[Dict]:
+        """
+        Legacy 검색 (BM25 + Dense Vector RRF)
+        """
         # 쿼리 토큰 추출 (설명용)
         query_tokens = []
-        if include_explanation and self.bm25_engine.tokenizer:
+        if include_explanation and self.bm25_engine and self.bm25_engine.tokenizer:
             query_tokens = self.bm25_engine.tokenizer.tokenize(query)
 
         # 1. BM25 검색
-        logger.debug(f"BM25 search with query: {query}")
-        bm25_results = self.bm25_engine.search(query, top_k=top_k)
+        bm25_results = []
+        if self.bm25_engine:
+            logger.debug(f"BM25 search with query: {query}")
+            bm25_results = self.bm25_engine.search(query, top_k=top_k)
 
         # 2. 벡터 검색
         logger.debug(f"Vector search")
@@ -113,13 +226,11 @@ class HybridSearchEngine:
                     'search_type': []
                 }
 
-                # 매칭 타입 추가
                 if doc_id in bm25_scores:
                     explanation['search_type'].append('keyword')
                 if doc_id in vector_scores:
                     explanation['search_type'].append('semantic')
 
-                # 매칭 키워드 추출 (문서 텍스트에서 쿼리 토큰 찾기)
                 doc_text = result.get('text', '') or result.get('payload', {}).get('text', '')
                 if doc_text and query_tokens:
                     doc_text_lower = doc_text.lower()
@@ -131,6 +242,69 @@ class HybridSearchEngine:
 
         return fused_results
 
+    def search_with_sparse(
+        self,
+        query: str,
+        dense_vector: Optional[np.ndarray] = None,
+        sparse_vector: Optional[Dict[int, float]] = None,
+        top_k: int = 20,
+        filter_conditions: Optional[Dict] = None
+    ) -> List[Dict]:
+        """
+        Multi-Vector 검색 (Sparse 벡터 직접 전달 또는 자동 생성)
+
+        Args:
+            query: 검색 쿼리
+            dense_vector: Dense 쿼리 벡터 (None이면 embedder로 자동 생성)
+            sparse_vector: Sparse 쿼리 벡터 {token_id: weight} (None이면 embedder로 자동 생성)
+            top_k: 반환할 결과 수
+            filter_conditions: 필터 조건
+
+        Returns:
+            검색 결과
+        """
+        # embedder가 있고 벡터가 제공되지 않은 경우 자동 생성
+        if (dense_vector is None or sparse_vector is None) and self.embedder is not None:
+            query_result = self.embedder.encode_query_for_search(query)
+            if dense_vector is None:
+                dense_vector = query_result['dense_vec']
+            if sparse_vector is None:
+                sparse_vector = query_result['sparse_vec']
+
+        if dense_vector is None:
+            raise ValueError("dense_vector is required when embedder is not provided")
+
+        if self.use_multi_vector and sparse_vector:
+            results = self.vector_store.search(
+                query_vector=dense_vector,
+                sparse_vector=sparse_vector,
+                top_k=top_k,
+                filter_conditions=filter_conditions,
+                use_hybrid=True
+            )
+        else:
+            # Fallback to legacy
+            results = self.vector_store.search(
+                query_vector=dense_vector,
+                top_k=top_k,
+                filter_conditions=filter_conditions
+            )
+
+        # 결과 포맷팅
+        formatted_results = []
+        for result in results:
+            payload = result.get('payload', {})
+            formatted = {
+                'id': result['id'],
+                'score': result['score'],
+                'text': payload.get('text', ''),
+                'metadata': payload,
+                'payload': payload
+            }
+            formatted_results.append(formatted)
+
+        return formatted_results
+
     def _reciprocal_rank_fusion(
         self,
         bm25_results: List[Dict],
@@ -141,14 +315,6 @@ class HybridSearchEngine:
         Reciprocal Rank Fusion 알고리즘
 
         RRF score = sum(1 / (k + rank))
-
-        Args:
-            bm25_results: BM25 검색 결과
-            vector_results: 벡터 검색 결과
-            top_k: 반환할 결과 수
-
-        Returns:
-            융합된 검색 결과
         """
         rrf_scores = {}
         doc_info = {}
@@ -168,16 +334,13 @@ class HybridSearchEngine:
 
             rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + rrf_score
 
-            # 메타데이터 병합 (벡터 검색 결과 우선)
             if doc_id not in doc_info:
                 doc_info[doc_id] = result
             else:
-                # payload 정보 추가/업데이트 및 metadata 병합
                 existing_payload = doc_info[doc_id].get('payload', {})
                 new_payload = result.get('payload', {})
                 doc_info[doc_id]['payload'] = {**existing_payload, **new_payload}
 
-                # metadata도 병합 (payload를 metadata로도 복사)
                 existing_metadata = doc_info[doc_id].get('metadata', {})
                 doc_info[doc_id]['metadata'] = {**existing_metadata, **new_payload}
 
@@ -188,21 +351,18 @@ class HybridSearchEngine:
             reverse=True
         )[:top_k]
 
-        # 결과 포맷팅 (metadata와 payload 통합)
+        # 결과 포맷팅
         final_results = []
         for doc_id, score in sorted_docs:
             doc = doc_info[doc_id]
             payload = doc.get('payload', {})
             metadata = doc.get('metadata', {})
 
-            # metadata가 비어있으면 payload에서 채움 (fallback)
             if not metadata and payload:
                 metadata = payload.copy()
-            # payload가 비어있으면 metadata에서 채움 (fallback)
             if not payload and metadata:
                 payload = metadata.copy()
 
-            # text 필드도 여러 소스에서 가져오기
             text = doc.get('text', '') or payload.get('text', '') or metadata.get('text', '')
 
             result = {
@@ -222,31 +382,18 @@ class HybridSearchEngine:
         vector_results: List[Dict],
         top_k: int
     ) -> List[Dict]:
-        """
-        가중 평균 방식의 점수 융합
-
-        Args:
-            bm25_results: BM25 검색 결과
-            vector_results: 벡터 검색 결과
-            top_k: 반환할 결과 수
-
-        Returns:
-            융합된 검색 결과
-        """
-        # 점수 정규화
+        """가중 평균 방식의 점수 융합"""
         bm25_scores_norm = self._normalize_scores([r['score'] for r in bm25_results])
         vector_scores_norm = self._normalize_scores([r['score'] for r in vector_results])
 
         combined_scores = {}
         doc_info = {}
 
-        # BM25 결과 처리
         for result, norm_score in zip(bm25_results, bm25_scores_norm):
             doc_id = result['id']
             combined_scores[doc_id] = self.bm25_weight * norm_score
             doc_info[doc_id] = result
 
-        # 벡터 결과 처리
         for result, norm_score in zip(vector_results, vector_scores_norm):
             doc_id = result['id']
             combined_scores[doc_id] = combined_scores.get(doc_id, 0) + \
@@ -257,14 +404,12 @@ class HybridSearchEngine:
             else:
                 doc_info[doc_id]['payload'] = result.get('payload', {})
 
-        # 점수 기준 정렬
         sorted_docs = sorted(
             combined_scores.items(),
             key=lambda x: x[1],
             reverse=True
         )[:top_k]
 
-        # 결과 포맷팅
         final_results = []
         for doc_id, score in sorted_docs:
             result = {
@@ -279,15 +424,7 @@ class HybridSearchEngine:
         return final_results
 
     def _normalize_scores(self, scores: List[float]) -> List[float]:
-        """
-        점수를 0-1 범위로 정규화
-
-        Args:
-            scores: 원본 점수 리스트
-
-        Returns:
-            정규화된 점수 리스트
-        """
+        """점수를 0-1 범위로 정규화"""
         if not scores:
             return []
 
@@ -309,31 +446,47 @@ class HybridSearchEngine:
         query: str,
         query_embedding: np.ndarray,
         filter_conditions: Dict,
-        top_k: int = 20
+        top_k: int = 20,
+        sparse_vector: Optional[Dict[int, float]] = None
     ) -> List[Dict]:
         """
         필터 조건이 있는 검색
-
-        Args:
-            query: 검색 쿼리
-            query_embedding: 쿼리 임베딩
-            filter_conditions: 필터 조건 (예: {'file_type': 'pdf'})
-            top_k: 반환할 결과 수
-
-        Returns:
-            검색 결과
         """
-        # 벡터 검색에 필터 적용
+        if self.use_multi_vector and sparse_vector:
+            # Multi-Vector + 필터
+            results = self.vector_store.search(
+                query_vector=query_embedding,
+                sparse_vector=sparse_vector,
+                top_k=top_k,
+                filter_conditions=filter_conditions,
+                use_hybrid=True
+            )
+
+            formatted_results = []
+            for result in results:
+                payload = result.get('payload', {})
+                formatted = {
+                    'id': result['id'],
+                    'score': result['score'],
+                    'text': payload.get('text', ''),
+                    'metadata': payload,
+                    'payload': payload
+                }
+                formatted_results.append(formatted)
+            return formatted_results
+
+        # Legacy 모드
         vector_results = self.vector_store.search(
             query_embedding,
             top_k=top_k,
             filter_conditions=filter_conditions
         )
 
-        # BM25 검색 (수동 필터링)
+        if not self.bm25_engine:
+            return vector_results
+
         bm25_results = self.bm25_engine.search(query, top_k=top_k * 2)
 
-        # 메타데이터 기반 필터링
         filtered_bm25 = []
         for result in bm25_results:
             match = True
@@ -344,7 +497,6 @@ class HybridSearchEngine:
             if match:
                 filtered_bm25.append(result)
 
-        # 결과 융합
         fused_results = self._reciprocal_rank_fusion(
             filtered_bm25[:top_k],
             vector_results,
@@ -359,13 +511,14 @@ def test_hybrid_search():
     from ..embeddings.embedding_model import BGEM3Embedder
     import torch
 
-    logger.info("Testing Hybrid Search Engine")
+    logger.info("Testing Multi-Vector Hybrid Search Engine")
 
-    # 1. 컴포넌트 초기화
+    # 1. 컴포넌트 초기화 (Multi-Vector 모드)
     vector_store = QdrantVectorStore(
-        storage_path="/tmp/test_hybrid_qdrant",
+        storage_path="/tmp/test_hybrid_multi_vector",
         collection_name="test_hybrid",
-        recreate_collection=True
+        recreate_collection=True,
+        use_sparse=True
     )
 
     bm25_engine = BM25SearchEngine(use_korean_tokenizer=True)
@@ -393,49 +546,53 @@ def test_hybrid_search():
         {"department": "인사팀", "file_type": "docx"}
     ]
 
-    # 3. 임베딩 생성 및 인덱싱
-    logger.info("\n인덱싱 중...")
-    embeddings = embedder.encode_documents(documents)
-    doc_embeddings = embeddings['dense_vecs']
+    # 3. Multi-Vector 임베딩 생성 및 인덱싱
+    logger.info("\nMulti-Vector 인덱싱 중...")
+    embeddings = embedder.encode_for_indexing(documents)
+    dense_vecs = embeddings['dense_vecs']
+    sparse_vecs = embeddings['sparse_vecs']
 
-    # 벡터 스토어에 추가
     payloads = [
         {**meta, 'text': doc}
         for meta, doc in zip(metadata, documents)
     ]
 
-    vector_store.add_documents(doc_ids, doc_embeddings, payloads)
+    vector_store.add_documents(doc_ids, dense_vecs, payloads, sparse_vecs)
 
-    # BM25 인덱싱
+    # BM25 인덱싱 (fallback용)
     bm25_engine.index_documents(documents, doc_ids, metadata)
 
-    # 4. 하이브리드 검색 엔진 생성
+    # 4. 하이브리드 검색 엔진 생성 (Multi-Vector 모드)
     hybrid_engine = HybridSearchEngine(
         vector_store=vector_store,
         bm25_engine=bm25_engine,
         bm25_weight=0.4,
-        vector_weight=0.6
+        vector_weight=0.6,
+        use_multi_vector=True
     )
 
     # 5. 검색 테스트
     test_query = "매출 보고서"
     logger.info(f"\n검색 쿼리: '{test_query}'")
 
-    query_embedding = embedder.encode_queries(test_query)
+    # 쿼리 임베딩 (Dense + Sparse)
+    query_result = embedder.encode_query_for_search(test_query)
+    query_dense = query_result['dense_vec']
+    query_sparse = query_result['sparse_vec']
 
     results = hybrid_engine.search(
         query=test_query,
-        query_embedding=query_embedding,
+        query_embedding=query_dense,
+        sparse_vector=query_sparse,
         top_k=20,
-        final_top_k=3,
-        use_rrf=True
+        final_top_k=3
     )
 
-    logger.info(f"\n검색 결과:")
+    logger.info(f"\n검색 결과 (Multi-Vector):")
     for i, result in enumerate(results):
         logger.info(f"{i+1}. [Score: {result['score']:.4f}]")
         logger.info(f"   Text: {result['payload'].get('text', '')[:60]}...")
-        logger.info(f"   Metadata: {result['metadata']}")
+        logger.info(f"   Type: {result.get('explanation', {}).get('search_type', [])}")
 
 
 if __name__ == "__main__":

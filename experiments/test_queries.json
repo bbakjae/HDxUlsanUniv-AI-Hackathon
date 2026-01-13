@@ -1,0 +1,303 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "created_at": "2026-01-10",
+    "description": "AI Agent Service 모델 비교 실험용 테스트 쿼리셋",
+    "total_queries": 30
+  },
+  "queries": [
+    {
+      "id": "Q01",
+      "category": "keyword_simple",
+      "query": "안전 점검 보고서",
+      "language": "ko",
+      "expected_keywords": ["안전", "점검", "보고서"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q02",
+      "category": "keyword_simple",
+      "query": "회의록",
+      "language": "ko",
+      "expected_keywords": ["회의", "회의록"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q03",
+      "category": "keyword_simple",
+      "query": "예산 계획",
+      "language": "ko",
+      "expected_keywords": ["예산", "계획", "비용"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q04",
+      "category": "keyword_simple",
+      "query": "마케팅 전략",
+      "language": "ko",
+      "expected_keywords": ["마케팅", "전략", "홍보"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q05",
+      "category": "keyword_simple",
+      "query": "인사 평가",
+      "language": "ko",
+      "expected_keywords": ["인사", "평가", "성과"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q06",
+      "category": "keyword_simple",
+      "query": "프로젝트 일정",
+      "language": "ko",
+      "expected_keywords": ["프로젝트", "일정", "계획"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q07",
+      "category": "keyword_simple",
+      "query": "매출 실적",
+      "language": "ko",
+      "expected_keywords": ["매출", "실적", "수익"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q08",
+      "category": "keyword_simple",
+      "query": "고객 분석",
+      "language": "ko",
+      "expected_keywords": ["고객", "분석", "데이터"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q09",
+      "category": "keyword_simple",
+      "query": "계약서",
+      "language": "ko",
+      "expected_keywords": ["계약", "계약서", "협약"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q10",
+      "category": "keyword_simple",
+      "query": "교육 자료",
+      "language": "ko",
+      "expected_keywords": ["교육", "자료", "훈련"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q11",
+      "category": "temporal",
+      "query": "작년 실적 보고서",
+      "language": "ko",
+      "expected_keywords": ["실적", "보고서"],
+      "temporal_filter": {"type": "relative", "value": "last_year"},
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q12",
+      "category": "temporal",
+      "query": "최근 3개월 회의록",
+      "language": "ko",
+      "expected_keywords": ["회의록"],
+      "temporal_filter": {"type": "relative", "value": "last_3_months"},
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q13",
+      "category": "temporal",
+      "query": "2024년 상반기 계획",
+      "language": "ko",
+      "expected_keywords": ["계획"],
+      "temporal_filter": {"type": "absolute", "start": "2024-01-01", "end": "2024-06-30"},
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q14",
+      "category": "temporal",
+      "query": "지난달 프로젝트 현황",
+      "language": "ko",
+      "expected_keywords": ["프로젝트", "현황"],
+      "temporal_filter": {"type": "relative", "value": "last_month"},
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q15",
+      "category": "temporal",
+      "query": "올해 예산 문서",
+      "language": "ko",
+      "expected_keywords": ["예산", "문서"],
+      "temporal_filter": {"type": "relative", "value": "this_year"},
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q16",
+      "category": "temporal",
+      "query": "1분기 매출 보고",
+      "language": "ko",
+      "expected_keywords": ["매출", "보고"],
+      "temporal_filter": {"type": "quarter", "value": "Q1"},
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q17",
+      "category": "temporal",
+      "query": "최근 1주일 업데이트",
+      "language": "ko",
+      "expected_keywords": ["업데이트"],
+      "temporal_filter": {"type": "relative", "value": "last_week"},
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q18",
+      "category": "temporal",
+      "query": "2025년 하반기 전략",
+      "language": "ko",
+      "expected_keywords": ["전략"],
+      "temporal_filter": {"type": "absolute", "start": "2025-07-01", "end": "2025-12-31"},
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q19",
+      "category": "semantic",
+      "query": "직원 복지 향상 방안",
+      "language": "ko",
+      "expected_keywords": ["복지", "직원", "혜택", "향상"],
+      "search_intent": "employee_benefits",
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q20",
+      "category": "semantic",
+      "query": "고객 만족도 개선 전략",
+      "language": "ko",
+      "expected_keywords": ["고객", "만족", "서비스", "개선"],
+      "search_intent": "customer_satisfaction",
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q21",
+      "category": "semantic",
+      "query": "업무 효율화 도구",
+      "language": "ko",
+      "expected_keywords": ["효율", "생산성", "도구", "자동화"],
+      "search_intent": "productivity_tools",
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q22",
+      "category": "semantic",
+      "query": "비용 절감 아이디어",
+      "language": "ko",
+      "expected_keywords": ["비용", "절감", "효율", "최적화"],
+      "search_intent": "cost_reduction",
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q23",
+      "category": "semantic",
+      "query": "신규 사업 기회",
+      "language": "ko",
+      "expected_keywords": ["신규", "사업", "기회", "시장"],
+      "search_intent": "new_business",
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q24",
+      "category": "semantic",
+      "query": "팀 협업 개선",
+      "language": "ko",
+      "expected_keywords": ["협업", "팀", "소통", "커뮤니케이션"],
+      "search_intent": "team_collaboration",
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q25",
+      "category": "semantic",
+      "query": "리스크 관리 방안",
+      "language": "ko",
+      "expected_keywords": ["리스크", "위험", "관리", "대응"],
+      "search_intent": "risk_management",
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q26",
+      "category": "english",
+      "query": "quarterly sales report",
+      "language": "en",
+      "expected_keywords": ["quarterly", "sales", "report"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q27",
+      "category": "english",
+      "query": "project timeline",
+      "language": "en",
+      "expected_keywords": ["project", "timeline", "schedule"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q28",
+      "category": "english",
+      "query": "team performance review",
+      "language": "en",
+      "expected_keywords": ["team", "performance", "review"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q29",
+      "category": "english",
+      "query": "budget analysis",
+      "language": "en",
+      "expected_keywords": ["budget", "analysis", "financial"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    },
+    {
+      "id": "Q30",
+      "category": "english",
+      "query": "marketing campaign results",
+      "language": "en",
+      "expected_keywords": ["marketing", "campaign", "results"],
+      "relevant_doc_ids": [],
+      "relevance_scores": {}
+    }
+  ],
+  "reference_summaries": [
+    {
+      "doc_id": "sample_doc_1",
+      "original_text": "",
+      "reference_summary": "",
+      "summary_style": "bullet_points"
+    }
+  ]
+}
