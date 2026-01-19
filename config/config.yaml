@@ -80,3 +80,8 @@ server:
   host: "0.0.0.0"
   port: 8000
   reload: false
+
+# MongoDB 설정
+mongodb:
+  uri: "mongodb://localhost:27017/"
+  db_name: "file_indexing_db"
