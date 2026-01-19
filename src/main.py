@@ -559,7 +559,7 @@ class AIAgentPipeline:
                         candidate_embeddings = np.vstack(vectors_list)
                 except Exception as e:
                     logger.warning(f"Failed to get embeddings for recommendations: {e}")
-                    candidate_embeddings = None
+                    candidate_embeddings = np.zeros((len(all_results), self.embedder.get_embedding_dim()), dtype=np.float32)
 
                 recommendations = self.recommender.recommend_similar_files(
                     target_file=target_file,
