@@ -20,7 +20,10 @@ HD_AI_Hackathon/
 │   ├── embeddings/           # 임베딩 생성 모듈
 │   ├── search/               # 검색 엔진 모듈
 │   ├── llm/                  # LLM 추론 모듈
+│   └── index/                # 간단한 인덱싱, 몽고 테스트용 폴더
+│   └── front/                # streamlit 프론트 뷰
 │   └── recommend/            # 추천 시스템 모듈
+
 ├── config/                    # 설정 파일
 ├── scripts/                   # 유틸리티 스크립트
 ├── tests/                     # 테스트 코드
@@ -29,15 +32,15 @@ HD_AI_Hackathon/
 
 ## 기술 스택
 - **문서 파싱**: PyMuPDF, python-pptx, openpyxl, python-docx, PaddleOCR
-- **임베딩**: BAAI/bge-m3
+- **임베딩**: BAAI/bge-m3, dragonkue/BGE-m3-ko
 - **벡터 DB**: Qdrant
 - **검색**: BM25 + 시맨틱 검색 + Reranking
 - **LLM**: Qwen2.5-14B-Instruct (vLLM)
 - **백엔드**: FastAPI
-- **프론트엔드**: Gradio
+- **프론트엔드**: Gradio, streamlit
 
 ## 설치 및 실행
 1. 의존성 설치: `pip install -r requirements.txt`
 2. 합성 데이터 생성: `python scripts/generate_synthetic_data.py`
 3. 파일 인덱싱: `python scripts/index_files.py`
-4. 서버 실행: `python src/main.py`
+4. 서버 실행: `python src/main.py` (또는 streamlit run src/front/prat11.py)
