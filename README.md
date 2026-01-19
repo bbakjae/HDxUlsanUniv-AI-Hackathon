@@ -34,6 +34,7 @@ HD_AI_Hackathon/
 - **문서 파싱**: PyMuPDF, python-pptx, openpyxl, python-docx, PaddleOCR
 - **임베딩**: BAAI/bge-m3, dragonkue/BGE-m3-ko
 - **벡터 DB**: Qdrant
+- **NoSQL DB**: MongoDB
 - **검색**: BM25 + 시맨틱 검색 + Reranking
 - **LLM**: Qwen2.5-14B-Instruct (vLLM)
 - **백엔드**: FastAPI
@@ -42,5 +43,12 @@ HD_AI_Hackathon/
 ## 설치 및 실행
 1. 의존성 설치: `pip install -r requirements.txt`
 2. 합성 데이터 생성: `python scripts/generate_synthetic_data.py`
+3. DB설치: winget install MongoDB.Server
+(Linux인 경우
+sudo apt install -y mongodb
+sudo systemctl start mongodb
+# 재부팅시 자동실행 (필요시)
+sudo systemctl enable mongodb
+)
 3. 파일 인덱싱: `python scripts/index_files.py`
 4. 서버 실행: `python src/main.py` (또는 streamlit run src/front/prat11.py)
