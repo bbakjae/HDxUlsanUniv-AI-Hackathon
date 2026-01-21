@@ -207,6 +207,42 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+        # 해당 메시지에 저장된 결과가 있을 때만 카드를 출력
+        if "results" in msg and msg["results"]:
+            st.markdown(f"<br><h3>참고 문서 ({len(msg['results'])}건)</h3>", unsafe_allow_html=True)
+
+            for f in msg["results"]:
+                meta = f.get("metadata", {})
+                ftype = str(meta.get("file_type", "pdf")).lower()
+                raw_score = f.get("score", 0)
+                score_pct = int(raw_score * 100) if raw_score <= 1 else int(raw_score)
+
+                # 미리보기/요약 내용 결정
+                summary_content = f.get("summary", "")
+                if not summary_content or summary_content == "요약 미사용":
+                    raw_text = f.get("text") or meta.get("text") or ""
+                    summary_content = f"🔍 문서 미리보기: {raw_text[:300]}..." if raw_text else "내용 없음"
+
+                # 기존의 화려한 카드 스타일 HTML을 그대로 사용합니다.
+                st.markdown(f"""
+                <details class="custom-toggle" open>
+                    <summary class="toggle-header">
+                        <span class="header-badge badge-{ftype}">{ftype.upper()}</span>
+                        <span class="header-title">{meta.get("file_name")}</span>
+                        <span class="header-score">{score_pct}% 일치</span>
+                        <span class="toggle-arrow">▼</span>
+                    </summary>
+                    <div class="toggle-content">
+                        <div class="summary-text">
+                            <strong style="font-size: 16px;">문서 내용 ({'요약' if use_summary else '미리보기'})</strong><br>
+                            {summary_content}
+                        </div>
+                        <span class="path-label">파일 경로</span>
+                        <div class="path-box">{meta.get("file_path")}</div>
+                    </div>
+                </details>
+                """, unsafe_allow_html=True)
+
 # -------------------------------------------------------------------------
 # 10. 사용자 입력 및 AI 프로세스
 # -------------------------------------------------------------------------
@@ -253,6 +289,9 @@ if chat_started and st.session_state.messages[-1]["role"] == "user":
 
         # 결과 텍스트 출력
         message_placeholder = st.empty()
+        current_search_results = results
+
+        status.update(label="분석 완료!", state="complete", expanded=False)
         summary_status = "요약을 포함하여" if use_summary else "목록 중심으로"
         full_text = f"네, 요청하신 내용을 바탕으로 {summary_status} 관련 문서를 찾았습니다."
 
@@ -263,49 +302,9 @@ if chat_started and st.session_state.messages[-1]["role"] == "user":
             message_placeholder.markdown(msg_buffer + "▌")
 
         message_placeholder.markdown(full_text)
-        st.session_state.messages.append({"role": "assistant", "content": full_text})
-
-# -------------------------------------------------------------------------
-# 결과 카드
-# -------------------------------------------------------------------------
-if chat_started and st.session_state.last_results:
-    st.markdown(f"<br><h3>참고 문서 ({len(st.session_state.last_results)}건)</h3>", unsafe_allow_html=True)
-
-    for f in st.session_state.last_results:
-        meta = f.get("metadata", {})
-        ftype = str(meta.get("file_type", "pdf")).lower()
-        raw_score = f.get("score", 0)
-        score_pct = int(raw_score * 100) if raw_score <= 1 else int(raw_score)
-
-        # --- [추가된 로직: 요약 대신 미리보기 생성] ---
-        summary_content = f.get("summary", "")
-
-        # 요약이 없거나 "요약 미사용"인 경우 미리보기 텍스트 생성
-        if not summary_content or summary_content == "요약 미사용":
-            # 1. f['text'] 확인 -> 2. meta['text'] 확인 -> 3. 없으면 안내 문구
-            raw_text = f.get("text") or meta.get("text") or ""
-            if raw_text:
-                # 앞부분 300자 추출 (가독성을 위해 적당히 자름)
-                summary_content = f"🔍 문서 미리보기: {raw_text[:300]}..."
-            else:
-                summary_content = "내용을 불러올 수 없는 문서입니다."
-        # ------------------------------------------
-
-        st.markdown(f"""
-        <details class="custom-toggle" open>
-            <summary class="toggle-header">
-                <span class="header-badge badge-{ftype}">{ftype.upper()}</span>
-                <span class="header-title">{meta.get("file_name")}</span>
-                <span class="header-score">{score_pct}% 일치</span>
-                <span class="toggle-arrow">▼</span>
-            </summary>
-            <div class="toggle-content">
-                <div class="summary-text">
-                    <strong style="font-size: 16px;">문서 내용 ({'요약' if use_summary else '미리보기'})</strong><br>
-                    {summary_content}
-                </div>
-                <span class="path-label">파일 경로</span>
-                <div class="path-box">{meta.get("file_path")}</div>
-            </div>
-        </details>
-        """, unsafe_allow_html=True)
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": full_text,
+            "results": current_search_results  # 검색 결과를 여기에 보관!
+        })
+        st.rerun()
