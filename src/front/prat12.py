@@ -55,7 +55,7 @@ if "last_results" not in st.session_state:
 chat_started = len(st.session_state.messages) > 0
 
 # 봇 이미지 로드
-bot_image_path = project_root / "lumi_no_bg.png"
+bot_image_path = project_root / "lumi.png"
 bot_image_base64 = get_base64_image(bot_image_path)
 
 # -------------------------------------------------------------------------
